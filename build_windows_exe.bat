@@ -3,7 +3,7 @@ title NEON PRO - Windows Executable (.exe) Compiler for Harish
 echo ====================================================================
 echo   NEON PRO: Compiling Standalone Windows .EXE for Harish
 echo ====================================================================
-echo [1/3] Verifying Python & Installing PyInstaller...
+echo [1/3] Verifying Python & Installing Dependencies...
 python -m pip install --upgrade pip
 pip install -r requirements.txt pyinstaller
 
