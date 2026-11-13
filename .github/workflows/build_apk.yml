@@ -1,0 +1,44 @@
+name: NEON PRO - Auto Build Android APK
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Signed Installable Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache Buildozer Global Directory
+        uses: actions/cache@v4
+        with:
+          path: |
+            .buildozer
+            ~/.buildozer
+          key: ${{ runner.os }}-buildozer-${{ hashFiles('buildozer.spec') }}
+
+      - name: Build & Sign Android APK with Buildozer
+        uses: ArtemSBulgakov/buildozer-action@v1
+        with:
+          buildozer_version: stable
+          workdir: .
+          buildozer_args: android debug
+
+      - name: Verify APK Signature & Alignment
+        run: |
+          ls -lh bin/*.apk
+          unzip -t bin/*.apk | tail -n 5
+
+      - name: Upload Installable Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NeonMobile-Android-APK
+          path: bin/*.apk
