@@ -40,9 +40,9 @@ jobs:
             .buildozer
             ~/.buildozer
             ~/.gradle/caches
-          key: ubuntu22-v3-buildozer-${{ hashFiles('buildozer.spec') }}
+          key: ubuntu22-v4-buildozer-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
-            ubuntu22-v3-buildozer-
+            ubuntu22-v4-buildozer-
 
       - name: Install Buildozer & Cython
         run: |

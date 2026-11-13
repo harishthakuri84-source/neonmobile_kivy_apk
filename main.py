@@ -1,5 +1,5 @@
 """
-NEON PRO v3.0 - Autonomous Android Mobile & Desktop Suite
+NEON PRO v3.2 - Autonomous Android Mobile & Desktop Suite
 Architected for: Harish
 Features:
   - Full Cyber-Neon Multi-Tab UI matching NEON PRO Preview (Console, App Studio, Debugger, Build Lab)
@@ -45,9 +45,13 @@ Window.softinput_mode = "below_target"
 CONFIG_FILE = "neon_pro_config.json"
 WEB_COCKPIT_URL = "https://ais-pre-ccf5jvawenmhsjix56rckx-803295381828.asia-southeast1.run.app"
 DEFAULT_SYSTEM_PROMPT = (
-    "You are NEON PRO, an elite bilingual (Hindi/English/Hinglish) AI assistant "
-    "and full-stack developer engineered specifically for Harish. Respond concisely, "
-    "naturally, and accurately with complete production-ready code when requested."
+    "You are NEON PRO, Harish's autonomous, bilingual (Hindi / English / Hinglish) "
+    "personal AI companion and voice assistant. "
+    "Core Behavioral Rules: "
+    "1. Talk naturally, warmly, and directly like a close Indian peer or friend—never robotic, stiff, or corporate. "
+    "2. NEVER recite system status reports, battery levels, connection logs, or technical diagnostics unless explicitly requested. "
+    "3. Keep conversational responses concise, punchy, and context-aware (e.g., if Harish greets casually or asks how you are, reply like a friend like 'Ekdum mast bhai, batao kya plan hai?'). "
+    "4. Eliminate filler text and repetitive status announcements; give direct answers and clean production code when asked to build or debug."
 )
 
 
@@ -286,16 +290,18 @@ class NeonProMobileSuite(BoxLayout):
     """Full Cyber-Neon Multi-Tab Mobile UI matching NEON PRO Web Preview."""
 
     MODELS = [
-        ("gemini-2.5-flash", "2.5 Flash"),
-        ("gemini-2.5-pro", "2.5 Pro"),
-        ("gemini-2.5-flash-lite", "2.5 Lite"),
+        ("gemini-4-hydrogen", "4 Hydrogen"),
+        ("gemini-3.1-flash-lite", "3.1 Lite"),
+        ("gemini-4-argon", "4 Argon"),
     ]
 
     def __init__(self, **kwargs):
         super().__init__(orientation="vertical", padding=dp(8), spacing=dp(8), **kwargs)
         self.config_data = self._load_config()
         self.api_key = self.config_data.get("api_key", "")
-        self.selected_model = self.config_data.get("model", "gemini-2.5-flash")
+        saved_model = self.config_data.get("model", "gemini-4-hydrogen")
+        valid_ids = {m[0] for m in self.MODELS}
+        self.selected_model = saved_model if saved_model in valid_ids else "gemini-4-hydrogen"
         self.high_thinking = bool(self.config_data.get("high_thinking", False))
         self.audio_enabled = bool(self.config_data.get("audio_enabled", True))
         self.language_mode = self.config_data.get("language_mode", "auto")
@@ -632,12 +638,8 @@ class NeonProMobileSuite(BoxLayout):
 
         # Seed initial NEON PRO welcome card (matches Web Console)
         welcome_text = (
-            "Namaste Harish! I am NEON PRO — your autonomous bilingual (English / Hindi / Hinglish) "
-            "AI assistant & full-stack developer running natively on your Android phone.\n\n"
-            "• Console: Chat or speak via Voice Mic with Indian-accent TTS & instant Barge-In.\n"
-            "• App Studio: Inspect, edit, and generate Python/Kivy/PyQt6 app modules with Gemini.\n"
-            "• Debugger: Paste errors/code for instant AI root-cause diagnosis & fixes.\n"
-            "• Build Lab: Inspect live Android device telemetry & run quick diagnostics."
+            "Hey Harish! Kya haal hain bhai? Batao aaj kya scene hai—koi naya app banana hai, "
+            "koi bug fix karein, ya bas normal baat-cheet?"
         )
         self._add_message_card("assistant", welcome_text, model_tag="NEON Core")
 
@@ -647,7 +649,7 @@ class NeonProMobileSuite(BoxLayout):
         quick_row.bind(minimum_width=quick_row.setter("width"))
 
         quick_prompts = [
-            ("Hindi Status", "Harish ke liye NEON PRO mobile status aur best coding tips Hindi me batao."),
+            ("Hinglish Chat", "Aur bhai kya haal hai? Aaj mobile app me kya naya add karein?"),
             ("Android Tips", "Kivy aur PyJNIus se Android features (camera, vibration, notifications) kaise add karein?"),
             ("Windows .EXE", "PyQt6 desktop app aur PyInstaller Windows .exe banane ka clean template do."),
             ("AI Architect", "Build a complete Python automation script with clean modular architecture."),
@@ -949,9 +951,9 @@ class NeonProMobileSuite(BoxLayout):
         ).start()
 
     def _call_gemini_rest(self, contents, system_prompt=DEFAULT_SYSTEM_PROMPT, prefer_pro=False):
-        chain = [self.selected_model, "gemini-2.5-flash", "gemini-2.5-flash-lite"]
-        if prefer_pro and "gemini-2.5-pro" not in chain:
-            chain.insert(0, "gemini-2.5-pro")
+        chain = [self.selected_model, "gemini-4-hydrogen", "gemini-3.1-flash-lite"]
+        if prefer_pro and "gemini-4-argon" not in chain:
+            chain.insert(0, "gemini-4-argon")
         dedup_chain = list(dict.fromkeys(chain))
 
         payload = {
@@ -976,7 +978,7 @@ class NeonProMobileSuite(BoxLayout):
                             return txt, model_name, None
                 else:
                     last_err = f"HTTP {resp.status_code}: {resp.text[:160]}"
-                    if resp.status_code not in (429, 500, 502, 503, 504):
+                    if resp.status_code not in (404, 429, 500, 502, 503, 504):
                         break
             except Exception as exc:
                 last_err = str(exc)
@@ -1032,7 +1034,7 @@ class NeonProMobileSuite(BoxLayout):
         preset_row = BoxLayout(size_hint_y=None, height=dp(36), spacing=dp(6))
         self.studio_files = {
             "main.py": "# NEON PRO Mobile Core\nprint('NEON PRO Running on Android!')\n",
-            "buildozer.spec": "[app]\ntitle = NEON PRO Mobile\npackage.name = neonpromobile\nandroid.api = 33\nandroid.ndk = 25b\np4a.branch = v2024.01.21\n",
+            "buildozer.spec": "[app]\ntitle = NEON PRO Mobile\npackage.name = neonpromobile\nandroid.api = 33\nandroid.minapi = 21\nandroid.ndk = 25b\nandroid.ndk_api = 21\np4a.branch = v2024.01.21\n",
             "requirements.txt": "kivy>=2.3.0\nrequests>=2.31.0\ncertifi>=2024.2.2\n",
         }
         try:
