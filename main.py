@@ -1,24 +1,35 @@
 """
-NEON PRO v3.2 - Autonomous Android Mobile & Desktop Suite
+NEON PRO v3.3 - Autonomous Android Mobile & Desktop Suite
 Architected for: Harish
 Features:
   - Full Cyber-Neon Multi-Tab UI matching NEON PRO Preview (Console, App Studio, Debugger, Build Lab)
   - Proper dp()/sp() responsive scaling for high-DPI Android phones (zero squished/blank views)
-  - Styled Rounded Cards, Message Bubbles, Code Blocks, Quick Prompts, and Settings Modal
+  - Crash-proof Android startup (lazy UI-thread PyJNIus TTS/Voice + guarded SSL/HTTP imports + recovery UI)
   - Direct Gemini REST API with automatic model failover + High Thinking mode
-  - Native Android Voice Input & Indian-accent TTS via PyJNIus + Instant Barge-In + Termux fallback
 """
 import json
 import os
 import platform as sys_platform
 import shutil
+import ssl
 import subprocess
 import sys
 import threading
 import time
+import traceback
+import urllib.error
+import urllib.request
 import webbrowser
-import certifi
-import requests
+
+try:
+    import certifi
+except Exception:
+    certifi = None
+
+try:
+    import requests
+except Exception:
+    requests = None
 
 from kivy.app import App
 from kivy.clock import Clock
@@ -35,12 +46,19 @@ from kivy.uix.scrollview import ScrollView
 from kivy.uix.textinput import TextInput
 from kivy.utils import platform
 
-# Fix SSL certificate bundle path on Android
-os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+# Fix SSL certificate bundle path on Android safely
+try:
+    if certifi is not None:
+        os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+except Exception:
+    pass
 
 # Cyber-dark palette matching NEON PRO web cockpit (#05070f)
-Window.clearcolor = (0.02, 0.027, 0.059, 1.0)
-Window.softinput_mode = "below_target"
+try:
+    Window.clearcolor = (0.02, 0.027, 0.059, 1.0)
+    Window.softinput_mode = "below_target"
+except Exception:
+    pass
 
 CONFIG_FILE = "neon_pro_config.json"
 WEB_COCKPIT_URL = "https://ais-pre-ccf5jvawenmhsjix56rckx-803295381828.asia-southeast1.run.app"
@@ -57,12 +75,19 @@ DEFAULT_SYSTEM_PROMPT = (
 
 def style_card(widget, bg_rgba, border_rgba=None, radius_dp=12, border_width=1.0):
     """Attach rounded background and crisp cyber-neon border to any Kivy widget."""
+    old_cb = getattr(widget, "_card_sync_cb", None)
+    if old_cb is not None:
+        try:
+            widget.unbind(pos=old_cb, size=old_cb)
+        except Exception:
+            pass
+
     widget.canvas.before.clear()
     with widget.canvas.before:
         bg_color = Color(*bg_rgba)
         bg_rect = RoundedRectangle(
             pos=widget.pos,
-            size=widget.size,
+            size=(max(widget.width, 1), max(widget.height, 1)),
             radius=[dp(radius_dp)],
         )
         border_color = None
@@ -82,7 +107,7 @@ def style_card(widget, bg_rgba, border_rgba=None, radius_dp=12, border_width=1.0
 
     def _sync(*_args):
         bg_rect.pos = widget.pos
-        bg_rect.size = widget.size
+        bg_rect.size = (max(widget.width, 1), max(widget.height, 1))
         if border_line is not None:
             border_line.rounded_rectangle = (
                 widget.x,
@@ -92,6 +117,7 @@ def style_card(widget, bg_rgba, border_rgba=None, radius_dp=12, border_width=1.0
                 dp(radius_dp),
             )
 
+    widget._card_sync_cb = _sync
     widget.bind(pos=_sync, size=_sync)
     return bg_color, border_color
 
@@ -119,7 +145,7 @@ def make_button(
         valign="middle",
         **kwargs,
     )
-    btn.bind(size=lambda inst, sz: setattr(inst, "text_size", (sz[0] - dp(8), None)))
+    btn.bind(size=lambda inst, sz: setattr(inst, "text_size", (max(sz[0] - dp(8), dp(20)), None)))
     style_card(btn, bg_rgba, border_rgba, radius_dp=radius_dp, border_width=1.0)
     return btn
 
@@ -143,7 +169,7 @@ class AutoLabel(Label):
 
 
 class AndroidVoiceBridge:
-    """Handles native Android TTS + Voice Recognition via PyJNIus or Termux:API."""
+    """Lazy UI-thread-safe Android TTS + Voice Recognition via PyJNIus or Termux:API."""
 
     def __init__(self, status_callback, transcript_callback):
         self.on_status = status_callback
@@ -152,39 +178,86 @@ class AndroidVoiceBridge:
         self.is_speaking = False
         self.speech_req_code = 9042
         self._android_ready = False
+        self._tts_init_started = False
+        self._activity = None
+        self._Locale = None
         self._language_mode = "auto"
-
-        if platform == "android":
-            Clock.schedule_once(lambda dt: self._init_android_bridge(), 0.6)
 
     def set_language_mode(self, mode):
         self._language_mode = mode
 
-    def _init_android_bridge(self):
-        try:
-            from android import activity
-            from android.permissions import Permission, request_permissions
-            from jnius import autoclass
-
-            request_permissions([Permission.INTERNET, Permission.RECORD_AUDIO])
-
-            PythonActivity = autoclass("org.kivy.android.PythonActivity")
-            TextToSpeech = autoclass("android.speech.tts.TextToSpeech")
-            Locale = autoclass("java.util.Locale")
-
-            self._activity = PythonActivity.mActivity
-            self._Locale = Locale
-            self.tts = TextToSpeech(self._activity, None)
+    def _run_ui(self, fn):
+        if platform == "android":
             try:
-                self.tts.setLanguage(Locale("en", "IN"))
+                from android.runnable import run_on_ui_thread
+
+                run_on_ui_thread(fn)()
+                return
             except Exception:
                 pass
+        fn()
 
+    def _ensure_android_ready(self):
+        if platform != "android" or self._android_ready:
+            return self._android_ready
+        try:
+            from android import activity
+            from jnius import autoclass
+
+            PythonActivity = autoclass("org.kivy.android.PythonActivity")
+            self._activity = PythonActivity.mActivity
+            self._Locale = autoclass("java.util.Locale")
             activity.bind(on_activity_result=self._on_activity_result)
             self._android_ready = True
-            self.on_status("Native Android Voice & TTS Ready")
-        except Exception as exc:
-            self.on_status(f"Voice note: {exc}")
+            return True
+        except BaseException as exc:
+            Clock.schedule_once(lambda _dt, e=str(exc): self.on_status(f"Voice note: {e}"), 0)
+            return False
+
+    def _ensure_tts_and_speak(self, clean_text):
+        if not self._ensure_android_ready():
+            return
+
+        def _ui_task():
+            try:
+                from jnius import autoclass
+
+                TextToSpeech = autoclass("android.speech.tts.TextToSpeech")
+                if self.tts is None:
+                    self.tts = TextToSpeech(self._activity, None)
+                    try:
+                        self.tts.setLanguage(self._Locale("en", "IN"))
+                    except BaseException:
+                        pass
+
+                    def _delayed_speak(_dt):
+                        self._run_ui(lambda: self._speak_on_ui(clean_text))
+
+                    Clock.schedule_once(_delayed_speak, 0.45)
+                else:
+                    self._speak_on_ui(clean_text)
+            except BaseException as exc:
+                Clock.schedule_once(lambda _dt, e=str(exc): self.on_status(f"TTS note: {e}"), 0)
+
+        self._run_ui(_ui_task)
+
+    def _speak_on_ui(self, clean_text):
+        if self.tts is None:
+            return
+        try:
+            from jnius import autoclass
+
+            TextToSpeech = autoclass("android.speech.tts.TextToSpeech")
+            use_hi = self._language_mode == "hi" or any(
+                "\u0900" <= ch <= "\u097f" for ch in clean_text
+            )
+            try:
+                self.tts.setLanguage(self._Locale("hi" if use_hi else "en", "IN"))
+            except BaseException:
+                pass
+            self.tts.speak(clean_text, TextToSpeech.QUEUE_FLUSH, None, "neon_tts")
+        except BaseException as exc:
+            Clock.schedule_once(lambda _dt, e=str(exc): self.on_status(f"TTS note: {e}"), 0)
 
     def _on_activity_result(self, request_code, _result_code, intent):
         if request_code != self.speech_req_code or intent is None:
@@ -197,15 +270,15 @@ class AndroidVoiceBridge:
             if results and results.size() > 0:
                 spoken_text = str(results.get(0))
                 Clock.schedule_once(lambda dt: self.on_transcript(spoken_text), 0)
-        except Exception as exc:
-            Clock.schedule_once(lambda dt: self.on_status(f"Mic parse error: {exc}"), 0)
+        except BaseException as exc:
+            Clock.schedule_once(lambda dt, e=str(exc): self.on_status(f"Mic parse error: {e}"), 0)
 
     def stop_speaking(self):
         self.is_speaking = False
         if self.tts is not None:
             try:
-                self.tts.stop()
-            except Exception:
+                self._run_ui(lambda: self.tts.stop())
+            except BaseException:
                 pass
 
     def speak(self, text):
@@ -217,19 +290,9 @@ class AndroidVoiceBridge:
         self.stop_speaking()
         self.is_speaking = True
 
-        if platform == "android" and self.tts is not None:
-            try:
-                from jnius import autoclass
-
-                TextToSpeech = autoclass("android.speech.tts.TextToSpeech")
-                use_hi = self._language_mode == "hi" or any(
-                    "\u0900" <= ch <= "\u097f" for ch in clean
-                )
-                self.tts.setLanguage(self._Locale("hi" if use_hi else "en", "IN"))
-                self.tts.speak(clean, TextToSpeech.QUEUE_FLUSH, None, "neon_tts")
-                return
-            except Exception:
-                pass
+        if platform == "android":
+            self._ensure_tts_and_speak(clean)
+            return
 
         if shutil.which("termux-tts-speak"):
             threading.Thread(
@@ -239,9 +302,14 @@ class AndroidVoiceBridge:
 
     def start_listening(self):
         self.stop_speaking()
-        if platform == "android" and self._android_ready:
+        if platform == "android":
+            if not self._ensure_android_ready():
+                return
             try:
+                from android.permissions import Permission, request_permissions
                 from jnius import autoclass
+
+                request_permissions([Permission.RECORD_AUDIO])
 
                 Intent = autoclass("android.content.Intent")
                 RecognizerIntent = autoclass("android.speech.RecognizerIntent")
@@ -255,7 +323,7 @@ class AndroidVoiceBridge:
                 intent.putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak to NEON PRO, Harish...")
                 self._activity.startActivityForResult(intent, self.speech_req_code)
                 return
-            except Exception as exc:
+            except BaseException as exc:
                 self.on_status(f"Mic unavailable: {exc}")
                 return
 
@@ -325,9 +393,14 @@ class NeonProMobileSuite(BoxLayout):
     # Persistence
     # ------------------------------------------------------------------
     def _get_config_path(self):
-        app = App.get_running_app()
-        base_dir = app.user_data_dir if app else "."
-        os.makedirs(base_dir, exist_ok=True)
+        base_dir = "."
+        try:
+            app = App.get_running_app()
+            if app and getattr(app, "user_data_dir", None):
+                base_dir = app.user_data_dir
+            os.makedirs(base_dir, exist_ok=True)
+        except Exception:
+            base_dir = "."
         return os.path.join(base_dir, CONFIG_FILE)
 
     def _load_config(self):
@@ -967,9 +1040,35 @@ class NeonProMobileSuite(BoxLayout):
                 f"{model_name}:generateContent?key={self.api_key}"
             )
             try:
-                resp = requests.post(url, json=payload, timeout=30)
-                if resp.status_code == 200:
-                    data = resp.json()
+                status_code = 0
+                raw_text = ""
+                data = None
+                if requests is not None:
+                    resp = requests.post(url, json=payload, timeout=30)
+                    status_code = resp.status_code
+                    raw_text = resp.text
+                    if status_code == 200:
+                        data = resp.json()
+                else:
+                    body_bytes = json.dumps(payload).encode("utf-8")
+                    req = urllib.request.Request(
+                        url,
+                        data=body_bytes,
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    )
+                    ctx = ssl.create_default_context()
+                    try:
+                        with urllib.request.urlopen(req, context=ctx, timeout=30) as uresp:
+                            status_code = uresp.getcode()
+                            raw_text = uresp.read().decode("utf-8", errors="replace")
+                            if status_code == 200:
+                                data = json.loads(raw_text)
+                    except urllib.error.HTTPError as herr:
+                        status_code = herr.code
+                        raw_text = herr.read().decode("utf-8", errors="replace")
+
+                if status_code == 200 and data:
                     cands = data.get("candidates") or []
                     if cands:
                         parts = cands[0].get("content", {}).get("parts", [])
@@ -977,8 +1076,8 @@ class NeonProMobileSuite(BoxLayout):
                         if txt:
                             return txt, model_name, None
                 else:
-                    last_err = f"HTTP {resp.status_code}: {resp.text[:160]}"
-                    if resp.status_code not in (404, 429, 500, 502, 503, 504):
+                    last_err = f"HTTP {status_code}: {raw_text[:160]}"
+                    if status_code not in (404, 429, 500, 502, 503, 504):
                         break
             except Exception as exc:
                 last_err = str(exc)
@@ -1038,8 +1137,9 @@ class NeonProMobileSuite(BoxLayout):
             "requirements.txt": "kivy>=2.3.0\nrequests>=2.31.0\ncertifi>=2024.2.2\n",
         }
         try:
-            with open(__file__, "r", encoding="utf-8") as self_fh:
-                self.studio_files["main.py"] = self_fh.read()
+            if __file__.endswith(".py") and os.path.exists(__file__):
+                with open(__file__, "r", encoding="utf-8") as self_fh:
+                    self.studio_files["main.py"] = self_fh.read()
         except Exception:
             pass
 
@@ -1413,17 +1513,19 @@ class NeonProMobileSuite(BoxLayout):
         low = cmd.lower()
         if "status" in low:
             lines.extend([
-                f"[color=34d399]• App Engine:[/color] NEON PRO v3.0 Mobile Suite",
+                f"[color=34d399]• App Engine:[/color] NEON PRO v3.3 Mobile Suite",
                 f"[color=34d399]• Active Model:[/color] {self.selected_model}",
                 f"[color=34d399]• API Key:[/color] {'Configured' if self.api_key else 'Not Set (Tap Set Key)'}",
-                f"[color=34d399]• Native Voice:[/color] {'Ready' if self.voice_bridge._android_ready else 'Text/Termux Fallback'}",
+                f"[color=34d399]• Native Voice:[/color] {'Ready' if self.voice_bridge._android_ready else 'On-Demand / Termux Fallback'}",
             ])
         elif "device" in low:
+            app_ref = App.get_running_app()
+            data_dir = getattr(app_ref, "user_data_dir", ".") if app_ref else "."
             lines.extend([
                 f"[color=e2e8f0]OS/Platform: {platform} / {sys_platform.platform()}[/color]",
                 f"[color=e2e8f0]Architecture: {sys_platform.machine()}[/color]",
                 f"[color=e2e8f0]Display Pixels: {Window.width}x{Window.height}[/color]",
-                f"[color=e2e8f0]Data Dir: {App.get_running_app().user_data_dir}[/color]",
+                f"[color=e2e8f0]Data Dir: {data_dir}[/color]",
             ])
         elif "python" in low:
             lines.append(f"[color=e2e8f0]Python {sys.version}[/color]")
@@ -1566,7 +1668,22 @@ class NeonProMobileSuite(BoxLayout):
 class NeonApp(App):
     def build(self):
         self.title = "NEON PRO Mobile"
-        return NeonProMobileSuite()
+        try:
+            return NeonProMobileSuite()
+        except Exception:
+            err_trace = traceback.format_exc()
+            print("[NEON PRO STARTUP ERROR]\n" + err_trace, flush=True)
+            box = BoxLayout(orientation="vertical", padding=dp(14), spacing=dp(10))
+            box.add_widget(
+                AutoLabel(
+                    text="[b][color=f87171]NEON PRO Startup Recovery[/color][/b]",
+                    font_size=sp(16),
+                )
+            )
+            sc = ScrollView(size_hint=(1, 1))
+            sc.add_widget(AutoLabel(text=escape_markup(err_trace), font_size=sp(11)))
+            box.add_widget(sc)
+            return box
 
 
 if __name__ == "__main__":
