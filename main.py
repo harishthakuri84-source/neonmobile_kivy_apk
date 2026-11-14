@@ -51,10 +51,53 @@ from kivy.uix.scrollview import ScrollView
 from kivy.uix.textinput import TextInput
 from kivy.utils import platform
 
-# Fix SSL certificate bundle path on Android safely
-try:
+# Fix SSL certificate bundle path on Termux / Android safely
+def _resolve_ca_bundle():
+    candidates = []
     if certifi is not None:
-        os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+        try:
+            candidates.append(certifi.where())
+        except Exception:
+            pass
+    candidates.extend([
+        os.environ.get("SSL_CERT_FILE", ""),
+        "/data/data/com.termux/files/usr/etc/tls/cert.pem",
+        "/etc/ssl/certs/ca-certificates.crt",
+    ])
+    for p in candidates:
+        if p and os.path.isfile(p):
+            return p
+    return None
+
+
+def _build_ssl_context():
+    ca_file = _resolve_ca_bundle()
+    if ca_file:
+        try:
+            return ssl.create_default_context(cafile=ca_file), ca_file
+        except Exception:
+            pass
+    if os.path.isdir("/system/etc/security/cacerts"):
+        try:
+            ctx = ssl.create_default_context(capath="/system/etc/security/cacerts")
+            if len(ctx.get_ca_certs()) > 0:
+                return ctx, True
+        except Exception:
+            pass
+    try:
+        ctx = ssl.create_default_context()
+        if len(ctx.get_ca_certs()) > 0:
+            return ctx, True
+    except Exception:
+        pass
+    return ssl._create_unverified_context(), False
+
+
+try:
+    _ca = _resolve_ca_bundle()
+    if _ca:
+        os.environ.setdefault("SSL_CERT_FILE", _ca)
+        os.environ.setdefault("REQUESTS_CA_BUNDLE", _ca)
 except Exception:
     pass
 
@@ -391,8 +434,12 @@ class AndroidVoiceBridge:
         }
         try:
             data = None
+            ssl_ctx, req_verify = _build_ssl_context()
             if requests is not None:
-                resp = requests.post(url, json=payload, timeout=14)
+                try:
+                    resp = requests.post(url, json=payload, timeout=14, verify=req_verify)
+                except requests.exceptions.SSLError:
+                    resp = requests.post(url, json=payload, timeout=14, verify=False)
                 if resp.status_code == 200:
                     data = resp.json()
             else:
@@ -402,10 +449,17 @@ class AndroidVoiceBridge:
                     headers={"Content-Type": "application/json"},
                     method="POST",
                 )
-                ctx = ssl.create_default_context()
-                with urllib.request.urlopen(req, context=ctx, timeout=14) as uresp:
-                    if uresp.getcode() == 200:
-                        data = json.loads(uresp.read().decode("utf-8", errors="replace"))
+                try:
+                    with urllib.request.urlopen(req, context=ssl_ctx, timeout=14) as uresp:
+                        if uresp.getcode() == 200:
+                            data = json.loads(uresp.read().decode("utf-8", errors="replace"))
+                except urllib.error.URLError as uerr:
+                    if "CERTIFICATE_VERIFY_FAILED" in str(uerr):
+                        with urllib.request.urlopen(req, context=ssl._create_unverified_context(), timeout=14) as uresp:
+                            if uresp.getcode() == 200:
+                                data = json.loads(uresp.read().decode("utf-8", errors="replace"))
+                    else:
+                        raise
 
             if not data:
                 return None
@@ -1451,24 +1505,37 @@ class NeonProMobileSuite(BoxLayout):
         ).start()
 
     def _http_get_json(self, url):
+        ssl_ctx, req_verify = _build_ssl_context()
         if requests is not None:
-            r = requests.get(url, timeout=15)
+            try:
+                r = requests.get(url, timeout=15, verify=req_verify)
+            except requests.exceptions.SSLError:
+                r = requests.get(url, timeout=15, verify=False)
             return r.status_code, (r.json() if r.status_code == 200 else r.text)
         req = urllib.request.Request(url, method="GET")
-        ctx = ssl.create_default_context()
         try:
-            with urllib.request.urlopen(req, context=ctx, timeout=15) as uresp:
+            with urllib.request.urlopen(req, context=ssl_ctx, timeout=15) as uresp:
                 txt = uresp.read().decode("utf-8", errors="replace")
                 return uresp.getcode(), json.loads(txt)
         except urllib.error.HTTPError as herr:
             return herr.code, herr.read().decode("utf-8", errors="replace")
+        except urllib.error.URLError as uerr:
+            if "CERTIFICATE_VERIFY_FAILED" in str(uerr):
+                with urllib.request.urlopen(req, context=ssl._create_unverified_context(), timeout=15) as uresp:
+                    txt = uresp.read().decode("utf-8", errors="replace")
+                    return uresp.getcode(), json.loads(txt)
+            raise
 
     def _http_post_json(self, url, payload, headers=None, timeout=30):
         hdrs = {"Content-Type": "application/json"}
         if headers:
             hdrs.update(headers)
+        ssl_ctx, req_verify = _build_ssl_context()
         if requests is not None:
-            resp = requests.post(url, json=payload, headers=hdrs, timeout=timeout)
+            try:
+                resp = requests.post(url, json=payload, headers=hdrs, timeout=timeout, verify=req_verify)
+            except requests.exceptions.SSLError:
+                resp = requests.post(url, json=payload, headers=hdrs, timeout=timeout, verify=False)
             data = None
             if resp.status_code in (200, 201):
                 try:
@@ -1482,9 +1549,8 @@ class NeonProMobileSuite(BoxLayout):
             headers=hdrs,
             method="POST",
         )
-        ctx = ssl.create_default_context()
         try:
-            with urllib.request.urlopen(req, context=ctx, timeout=timeout) as uresp:
+            with urllib.request.urlopen(req, context=ssl_ctx, timeout=timeout) as uresp:
                 raw_text = uresp.read().decode("utf-8", errors="replace")
                 data = None
                 try:
@@ -1494,6 +1560,17 @@ class NeonProMobileSuite(BoxLayout):
                 return uresp.getcode(), raw_text, data
         except urllib.error.HTTPError as herr:
             return herr.code, herr.read().decode("utf-8", errors="replace"), None
+        except urllib.error.URLError as uerr:
+            if "CERTIFICATE_VERIFY_FAILED" in str(uerr):
+                with urllib.request.urlopen(req, context=ssl._create_unverified_context(), timeout=timeout) as uresp:
+                    raw_text = uresp.read().decode("utf-8", errors="replace")
+                    data = None
+                    try:
+                        data = json.loads(raw_text)
+                    except Exception:
+                        data = None
+                    return uresp.getcode(), raw_text, data
+            raise
 
     def _discover_available_models(self):
         if self.discovered_models:
@@ -2114,31 +2191,47 @@ class NeonProMobileSuite(BoxLayout):
 
     def _gh_get(self, url, token):
         hdrs = self._gh_headers(token)
+        ssl_ctx, req_verify = _build_ssl_context()
         if requests is not None:
-            r = requests.get(url, headers=hdrs, timeout=20)
+            try:
+                r = requests.get(url, headers=hdrs, timeout=20, verify=req_verify)
+            except requests.exceptions.SSLError:
+                r = requests.get(url, headers=hdrs, timeout=20, verify=False)
             return r.status_code, (r.json() if r.content else {})
         req = urllib.request.Request(url, headers=hdrs, method="GET")
-        ctx = ssl.create_default_context()
         try:
-            with urllib.request.urlopen(req, context=ctx, timeout=20) as uresp:
+            with urllib.request.urlopen(req, context=ssl_ctx, timeout=20) as uresp:
                 return uresp.getcode(), json.loads(uresp.read().decode("utf-8", errors="replace"))
         except urllib.error.HTTPError as herr:
             return herr.code, {"message": herr.read().decode("utf-8", errors="replace")}
+        except urllib.error.URLError as uerr:
+            if "CERTIFICATE_VERIFY_FAILED" in str(uerr):
+                with urllib.request.urlopen(req, context=ssl._create_unverified_context(), timeout=20) as uresp:
+                    return uresp.getcode(), json.loads(uresp.read().decode("utf-8", errors="replace"))
+            raise
 
     def _gh_put(self, url, token, body):
         hdrs = self._gh_headers(token)
+        ssl_ctx, req_verify = _build_ssl_context()
         if requests is not None:
-            r = requests.put(url, json=body, headers=hdrs, timeout=20)
+            try:
+                r = requests.put(url, json=body, headers=hdrs, timeout=20, verify=req_verify)
+            except requests.exceptions.SSLError:
+                r = requests.put(url, json=body, headers=hdrs, timeout=20, verify=False)
             return r.status_code, (r.json() if r.content else {})
         req = urllib.request.Request(
             url, data=json.dumps(body).encode("utf-8"), headers=hdrs, method="PUT"
         )
-        ctx = ssl.create_default_context()
         try:
-            with urllib.request.urlopen(req, context=ctx, timeout=20) as uresp:
+            with urllib.request.urlopen(req, context=ssl_ctx, timeout=20) as uresp:
                 return uresp.getcode(), json.loads(uresp.read().decode("utf-8", errors="replace"))
         except urllib.error.HTTPError as herr:
             return herr.code, {"message": herr.read().decode("utf-8", errors="replace")}
+        except urllib.error.URLError as uerr:
+            if "CERTIFICATE_VERIFY_FAILED" in str(uerr):
+                with urllib.request.urlopen(req, context=ssl._create_unverified_context(), timeout=20) as uresp:
+                    return uresp.getcode(), json.loads(uresp.read().decode("utf-8", errors="replace"))
+            raise
 
     def _gh_check_runs(self):
         token = self.gh_token_input.text.strip()
