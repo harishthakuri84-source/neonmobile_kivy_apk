@@ -73,13 +73,15 @@ jobs:
   build_exe:
     name: Build Windows Standalone EXE
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 15
     env:
       PIP_NO_INPUT: '1'
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
       KIVY_NO_ARGS: '1'
       KIVY_NO_CONSOLELOG: '1'
       KIVY_NO_FILELOG: '1'
+      KIVY_NO_CONFIG: '1'
+      KIVY_LOG_MODE: 'PYTHON'
       PYTHONUNBUFFERED: '1'
     steps:
       - name: Checkout Repository
@@ -88,8 +90,9 @@ jobs:
       - name: Speed Up Windows Build (Defender Exclusion)
         shell: pwsh
         run: |
+          try { Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue } catch {}
           try {
-            Add-MpPreference -ExclusionPath $env:GITHUB_WORKSPACE, $env:LOCALAPPDATA, $env:TEMP -ErrorAction SilentlyContinue
+            Add-MpPreference -ExclusionPath $env:GITHUB_WORKSPACE, $env:LOCALAPPDATA, $env:TEMP, "C:\hostedtoolcache" -ErrorAction SilentlyContinue
           } catch {}
 
       - name: Set up Python 3.11
@@ -98,14 +101,22 @@ jobs:
           python-version: '3.11'
 
       - name: Install Windows Packaging Dependencies
+        shell: pwsh
         run: |
-          python -m pip install --prefer-binary --no-input "kivy==2.3.2" requests certifi urllib3 pyinstaller
-          python -c "import kivy, PyInstaller; print('Kivy:', kivy.__version__, 'PyInstaller:', PyInstaller.__version__)"
-          pyinstaller --version
+          python -m venv .venv_win
+          .\.venv_win\Scripts\python.exe -m pip install --upgrade pip
+          .\.venv_win\Scripts\python.exe -m pip install --prefer-binary --no-input "kivy==2.3.2" requests certifi urllib3 pyinstaller
+          .\.venv_win\Scripts\python.exe -c "import kivy, PyInstaller; print('Kivy:', kivy.__version__, 'PyInstaller:', PyInstaller.__version__)"
+          .\.venv_win\Scripts\pyinstaller.exe --version
 
       - name: Compile Standalone Windows EXE
+        timeout-minutes: 8
+        shell: pwsh
+        env:
+          SDL_VIDEODRIVER: 'dummy'
+          SDL_AUDIODRIVER: 'dummy'
         run: |
-          pyinstaller --noconfirm --noconsole --onefile --noupx --log-level=INFO --exclude-module tkinter --exclude-module unittest --exclude-module test --exclude-module pydoc --name "NeonMobile_Windows" main.py
+          .\.venv_win\Scripts\pyinstaller.exe --clean --noconfirm --noconsole --onefile --noupx --log-level=INFO --collect-data certifi --exclude-module tkinter --exclude-module unittest --exclude-module test --exclude-module pydoc --exclude-module doctest --exclude-module lib2to3 --exclude-module kivy.tests --exclude-module docutils --exclude-module pygments --exclude-module numpy --exclude-module scipy --exclude-module matplotlib --exclude-module PIL --exclude-module cv2 --exclude-module enchant --exclude-module twisted --exclude-module pygame --name "NeonMobile_Windows" main.py
 
       - name: Verify Windows EXE Output
         shell: pwsh
