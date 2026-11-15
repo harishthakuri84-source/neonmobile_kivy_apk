@@ -1,11 +1,11 @@
 """
-NEON PRO v4.4 - User-Friendly All-in-One Mobile AI & APK Builder
+NEON PRO v4.5 - User-Friendly All-in-One Mobile AI & APK/EXE Builder
 Architected for: Harish
 Features:
-  - Zero Copy-Paste App Builder: Chat code, Templates & AI Build auto-sync straight to App Builder
-  - 1-Tap Build APK: Pushes all 4 files (main.py, buildozer.spec, requirements.txt, CI YML) to GitHub
-  - Voice-First Engine: Hands-Free loop, Barge-In, Personas, Gemini TTS (WAV) + Android TTS
-  - Crash-proof Android startup, SSL auto-fallback & On-Device Self-Test + Auto-Heal
+  - Background Inline Voice Recognition (SpeechRecognizer) with subtle live indicator (no Google popup)
+  - Dual Downloads: Dedicated Download APK File & Download EXE File + GitHub Actions Dual CI
+  - Easy GitHub Token Generator + 1-Tap Paste & Permanent Save across all new apps
+  - Zero Copy-Paste App Builder, Voice-First Engine, SSL Auto-Fallback & Self-Test + Auto-Heal
 """
 import ast
 import base64
@@ -307,12 +307,13 @@ def _pcm_to_wav_bytes(pcm_bytes, sample_rate=24000, channels=1, bits_per_sample=
 
 
 class AndroidVoiceBridge:
-    """Thread-safe Gemini TTS + Native Android TTS Fallback + Callback-Safe Speech Recognizer."""
+    """Thread-safe Gemini TTS + Background Inline SpeechRecognizer (No Google Popup)."""
 
-    def __init__(self, status_callback, transcript_callback, speak_done_callback, data_dir_fn):
+    def __init__(self, status_callback, transcript_callback, speak_done_callback, data_dir_fn, partial_callback=None):
         self.on_status = status_callback
         self.on_transcript = transcript_callback
         self.on_speak_done = speak_done_callback
+        self.on_partial = partial_callback
         self.get_data_dir = data_dir_fn
         self.tts = None
         self.is_speaking = False
@@ -327,6 +328,10 @@ class AndroidVoiceBridge:
         self._active_sound = None
         self._speak_gen = 0
         self._poll_ev = None
+        self._speech_recognizer = None
+        self._recognition_listener = None
+        self._last_rms_ts = 0.0
+        self._listen_gen = 0
 
     def configure(self, api_key=None, language_mode=None, voice_persona=None):
         if api_key is not None:
@@ -588,7 +593,116 @@ class AndroidVoiceBridge:
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _launch_android_recognizer(self):
+    def _emit_partial(self, text_val=None, rms_val=None, active=True):
+        if self.on_partial is not None:
+            Clock.schedule_once(
+                lambda _dt, t=text_val, r=rms_val, a=active: self.on_partial(t, r, a),
+                0,
+            )
+
+    def _get_recognition_listener(self):
+        if self._recognition_listener is not None:
+            return self._recognition_listener
+        from jnius import PythonJavaClass, autoclass, java_method
+
+        bridge = self
+        SpeechRecognizer = autoclass("android.speech.SpeechRecognizer")
+
+        class _NeonRecognitionListener(PythonJavaClass):
+            __javainterfaces__ = ["android/speech/RecognitionListener"]
+            __javacontext__ = "app"
+
+            @java_method("(Landroid/os/Bundle;)V")
+            def onReadyForSpeech(self, _params):
+                bridge.is_listening = True
+                Clock.schedule_once(lambda _dt: bridge.on_status("MIC LIVE • Bolo Harish..."), 0)
+                bridge._emit_partial(text_val="", rms_val=1.0, active=True)
+
+            @java_method("()V")
+            def onBeginningOfSpeech(self):
+                Clock.schedule_once(lambda _dt: bridge.on_status("SUN RAHA HOON... (Bolo)"), 0)
+
+            @java_method("(F)V")
+            def onRmsChanged(self, rmsdB):
+                now = time.time()
+                if now - bridge._last_rms_ts >= 0.16:
+                    bridge._last_rms_ts = now
+                    bridge._emit_partial(text_val=None, rms_val=float(rmsdB), active=True)
+
+            @java_method("([B)V")
+            def onBufferReceived(self, _buffer):
+                pass
+
+            @java_method("()V")
+            def onEndOfSpeech(self):
+                Clock.schedule_once(lambda _dt: bridge.on_status("SAMJHA RAHA HOON..."), 0)
+
+            @java_method("(I)V")
+            def onError(self, error_code):
+                if not bridge.is_listening:
+                    return
+                bridge.is_listening = False
+                bridge._emit_partial(text_val="", rms_val=0.0, active=False)
+                err_int = int(error_code)
+                if err_int in (6, 7):
+                    msg = "Awaz clear nahi aayi — dobara MIC dabao"
+                elif err_int == 9:
+                    msg = "Mic permission allow karo Android Settings me"
+                elif err_int in (1, 2, 3, 4):
+                    msg = "Voice network hiccup — dobara MIC dabao"
+                else:
+                    msg = f"Mic ready — dobara MIC dabao ({err_int})"
+                Clock.schedule_once(lambda _dt, m=msg: bridge.on_status(m), 0)
+
+            @java_method("(Landroid/os/Bundle;)V")
+            def onResults(self, results):
+                bridge.is_listening = False
+                bridge._emit_partial(text_val="", rms_val=0.0, active=False)
+                try:
+                    if results is not None:
+                        matches = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        if matches and matches.size() > 0:
+                            spoken = str(matches.get(0)).strip()
+                            if spoken:
+                                Clock.schedule_once(lambda _dt, s=spoken: bridge.on_transcript(s), 0)
+                                return
+                    Clock.schedule_once(lambda _dt: bridge.on_status("Samjha nahi — dobara boliyega"), 0)
+                except BaseException as exc:
+                    Clock.schedule_once(lambda _dt, e=str(exc): bridge.on_status(f"Mic parse error: {e}"), 0)
+
+            @java_method("(Landroid/os/Bundle;)V")
+            def onPartialResults(self, partialResults):
+                try:
+                    if partialResults is not None and bridge.is_listening:
+                        matches = partialResults.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        if matches and matches.size() > 0:
+                            partial_txt = str(matches.get(0)).strip()
+                            if partial_txt:
+                                bridge._emit_partial(text_val=partial_txt, rms_val=None, active=True)
+                except BaseException:
+                    pass
+
+            @java_method("(ILandroid/os/Bundle;)V")
+            def onEvent(self, _eventType, _params):
+                pass
+
+        self._recognition_listener = _NeonRecognitionListener()
+        return self._recognition_listener
+
+    def stop_listening(self):
+        self.is_listening = False
+        self._emit_partial(text_val="", rms_val=0.0, active=False)
+        if platform == "android" and self._speech_recognizer is not None:
+            def _stop_ui():
+                try:
+                    self._speech_recognizer.stopListening()
+                except BaseException:
+                    pass
+            self._run_ui(_stop_ui)
+        self.on_status("VOICE-FIRST INTELLIGENCE • Ready")
+
+    def _launch_android_recognizer_popup(self):
+        """Last-resort fallback only if background SpeechRecognizer service is absent on device."""
         try:
             from jnius import autoclass
 
@@ -610,10 +724,69 @@ class AndroidVoiceBridge:
             self.is_listening = False
             self.on_status(f"Mic unavailable: {exc}")
 
+    def _launch_android_recognizer(self):
+        """Primary zero-popup background SpeechRecognizer with subtle inline UI feedback."""
+        self._listen_gen += 1
+        gen = self._listen_gen
+
+        def _start_inline():
+            try:
+                from jnius import autoclass
+
+                SpeechRecognizer = autoclass("android.speech.SpeechRecognizer")
+                Intent = autoclass("android.content.Intent")
+                RecognizerIntent = autoclass("android.speech.RecognizerIntent")
+
+                if not SpeechRecognizer.isRecognitionAvailable(self._activity):
+                    self._launch_android_recognizer_popup()
+                    return
+
+                if self._speech_recognizer is None:
+                    self._speech_recognizer = SpeechRecognizer.createSpeechRecognizer(self._activity)
+                else:
+                    try:
+                        self._speech_recognizer.cancel()
+                    except BaseException:
+                        pass
+
+                listener = self._get_recognition_listener()
+                self._speech_recognizer.setRecognitionListener(listener)
+
+                intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+                intent.putExtra(
+                    RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                    RecognizerIntent.LANGUAGE_MODEL_FREE_FORM,
+                )
+                intent.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, self._activity.getPackageName())
+                lang_tag = "hi-IN" if self._language_mode == "hi" else "en-IN"
+                intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, lang_tag)
+                intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, True)
+                intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+
+                self.is_listening = True
+                Clock.schedule_once(lambda _dt: self.on_status("MIC ON • Bolo Harish..."), 0)
+                self._emit_partial(text_val="", rms_val=1.0, active=True)
+                self._speech_recognizer.startListening(intent)
+
+                # Safety guard in case an OEM ROM never fires onError/onResults
+                def _timeout_guard(_dt):
+                    if self.is_listening and self._listen_gen == gen:
+                        self.stop_listening()
+
+                Clock.schedule_once(_timeout_guard, 24.0)
+            except BaseException as exc:
+                self.is_listening = False
+                self._emit_partial(text_val="", rms_val=0.0, active=False)
+                Clock.schedule_once(lambda _dt, e=str(exc): self.on_status(f"Inline mic note: {e}"), 0)
+                self._launch_android_recognizer_popup()
+
+        self._run_ui(_start_inline)
+
     def _on_activity_result(self, request_code, result_code, intent):
         if request_code != self.speech_req_code:
             return
         self.is_listening = False
+        self._emit_partial(text_val="", rms_val=0.0, active=False)
         if result_code != -1 or intent is None:
             Clock.schedule_once(lambda _dt: self.on_status("Voice canceled — tap MIC to speak"), 0)
             return
@@ -632,6 +805,9 @@ class AndroidVoiceBridge:
             Clock.schedule_once(lambda _dt, e=str(exc): self.on_status(f"Mic parse error: {e}"), 0)
 
     def start_listening(self):
+        if self.is_listening:
+            self.stop_listening()
+            return
         self.stop_speaking()
         if platform == "android":
             if not self._ensure_android_ready():
@@ -662,6 +838,7 @@ class AndroidVoiceBridge:
         if shutil.which("termux-speech-to-text"):
             self.is_listening = True
             self.on_status("HARISH SPEAKING... (Termux Mic)")
+            self._emit_partial(text_val="", rms_val=1.0, active=True)
 
             def _listen():
                 try:
@@ -673,6 +850,7 @@ class AndroidVoiceBridge:
                         check=False,
                     )
                     self.is_listening = False
+                    self._emit_partial(text_val="", rms_val=0.0, active=False)
                     spoken = proc.stdout.strip()
                     if spoken:
                         Clock.schedule_once(lambda _dt, s=spoken: self.on_transcript(s), 0)
@@ -680,6 +858,7 @@ class AndroidVoiceBridge:
                         Clock.schedule_once(lambda _dt: self.on_status("Ready — tap MIC to speak"), 0)
                 except Exception as err:
                     self.is_listening = False
+                    self._emit_partial(text_val="", rms_val=0.0, active=False)
                     Clock.schedule_once(lambda _dt, e=str(err): self.on_status(f"Termux mic error: {e}"), 0)
 
             threading.Thread(target=_listen, daemon=True).start()
@@ -728,6 +907,7 @@ class NeonProMobileSuite(BoxLayout):
             transcript_callback=self._on_voice_transcript,
             speak_done_callback=self._on_tts_finished,
             data_dir_fn=self._get_data_dir,
+            partial_callback=self._on_voice_partial,
         )
         self.voice_bridge.configure(
             api_key=self.api_key,
@@ -812,7 +992,7 @@ class NeonProMobileSuite(BoxLayout):
 
         title_col = BoxLayout(orientation="vertical", spacing=dp(1))
         title_lbl = Label(
-            text="[b][color=ffffff]NEON[/color] [color=22d3ee]PRO[/color][/b] [color=64748b]v4.4[/color]",
+            text="[b][color=ffffff]NEON[/color] [color=22d3ee]PRO[/color][/b] [color=64748b]v4.5[/color]",
             markup=True,
             font_size=sp(15),
             halign="left",
@@ -921,7 +1101,7 @@ class NeonProMobileSuite(BoxLayout):
             ("app-studio", "App Builder"),
             ("debugger", "Auto-Fix"),
             ("terminal", "Device"),
-            ("github", "Get APK"),
+            ("github", "APK / EXE"),
         ]
         for key, label in tabs:
             btn = make_button(
@@ -948,6 +1128,8 @@ class NeonProMobileSuite(BoxLayout):
             else:
                 style_card(btn, (0.045, 0.068, 0.125, 1.0), None, radius_dp=7)
                 btn.color = (0.62, 0.71, 0.82, 1.0)
+        if tab_key == "github":
+            self._auto_detect_clipboard_token()
 
     def _cycle_model(self, *_args):
         ids = [m[0] for m in self.MODELS]
@@ -1101,23 +1283,36 @@ class NeonProMobileSuite(BoxLayout):
     def _build_console_tab(self):
         root = BoxLayout(orientation="vertical", spacing=dp(6))
 
-        # Voice-First Intelligence Strip (Matches Web Preview)
-        voice_card = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(66), padding=[dp(8), dp(5)], spacing=dp(4))
-        style_card(voice_card, (0.035, 0.055, 0.11, 1.0), (0.08, 0.38, 0.55, 0.5), radius_dp=10)
+        # Voice-First Intelligence Strip + Subtle Live Speaking Pill (No Fullscreen Google Popup)
+        self.voice_card = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(84), padding=[dp(8), dp(5)], spacing=dp(3))
+        style_card(self.voice_card, (0.035, 0.055, 0.11, 1.0), (0.08, 0.38, 0.55, 0.5), radius_dp=10)
 
         self.voice_status_lbl = Label(
             text=f"[b][color=22d3ee]VOICE-FIRST INTELLIGENCE[/color][/b] [color=94a3b8]• Persona: {self.voice_persona}[/color]",
             markup=True,
             font_size=sp(10),
             size_hint_y=None,
-            height=dp(20),
+            height=dp(18),
             halign="left",
             valign="middle",
         )
         self.voice_status_lbl.bind(size=lambda i, s: setattr(i, "text_size", s))
-        voice_card.add_widget(self.voice_status_lbl)
+        self.voice_card.add_widget(self.voice_status_lbl)
 
-        vc_row = BoxLayout(size_hint_y=None, height=dp(30), spacing=dp(5))
+        # Subtle compact inline listening + live words indicator inside the top bar
+        self.voice_live_pill = Label(
+            text="[color=64748b]● Background Mic Ready — tap MIC & speak freely[/color]",
+            markup=True,
+            font_size=sp(10),
+            size_hint_y=None,
+            height=dp(18),
+            halign="left",
+            valign="middle",
+        )
+        self.voice_live_pill.bind(size=lambda i, s: setattr(i, "text_size", s))
+        self.voice_card.add_widget(self.voice_live_pill)
+
+        vc_row = BoxLayout(size_hint_y=None, height=dp(28), spacing=dp(5))
         self.hands_free_btn = make_button(
             "Hands-Free OFF",
             (0.07, 0.09, 0.16, 1.0),
@@ -1152,8 +1347,8 @@ class NeonProMobileSuite(BoxLayout):
         self.persona_btn.bind(on_release=self._cycle_persona)
         vc_row.add_widget(self.persona_btn)
 
-        voice_card.add_widget(vc_row)
-        root.add_widget(voice_card)
+        self.voice_card.add_widget(vc_row)
+        root.add_widget(self.voice_card)
 
         # Messages Scroll Thread
         self.chat_scroll = ScrollView(size_hint=(1, 1), do_scroll_x=False, bar_width=dp(4))
@@ -1168,12 +1363,12 @@ class NeonProMobileSuite(BoxLayout):
         root.add_widget(self.chat_scroll)
 
         welcome_text = (
-            "Namaste Harish! Main NEON PRO hoon — sab kuch yahin ek jagah hai:\n"
-            "1. Bolo ya likho kaunsa app banana hai (e.g. 'Compound Interest Calculator banao').\n"
-            "2. Code bina copy-paste ke seedha App Builder me save ho jayega.\n"
-            "3. Seedha 'Build APK' dabao aur phone par installable .apk banao!"
+            "Namaste Harish! Main NEON PRO v4.5 hoon — ab aur bhi easy:\n"
+            "1. MIC dabao: Bina kisi popup ke background me sunega + upar chhota live indicator dikhega.\n"
+            "2. App Builder me bina copy-paste ke code save hoga.\n"
+            "3. Downloads ke 2 buttons hain: 'Download APK File' (Android) & 'Download EXE File' (Windows)!"
         )
-        self._add_message_card("assistant", welcome_text, model_tag="NEON v4.4")
+        self._add_message_card("assistant", welcome_text, model_tag="NEON v4.5")
         if not self.api_key:
             self._add_setup_card()
 
@@ -1576,7 +1771,40 @@ class NeonProMobileSuite(BoxLayout):
     def _update_voice_banner(self, message):
         self.voice_status_lbl.text = f"[b][color=22d3ee]VOICE[/color][/b] [color=cbd5e1]{escape_markup(message)}[/color]"
 
+    def _on_voice_partial(self, partial_text=None, rms_db=None, active=True):
+        if hasattr(self, "mic_btn"):
+            if active:
+                self.mic_btn.text = "LIVE"
+                style_card(self.mic_btn, (0.58, 0.08, 0.22, 1.0), (0.98, 0.35, 0.52, 0.85), radius_dp=9)
+            else:
+                self.mic_btn.text = "MIC"
+                style_card(self.mic_btn, (0.28, 0.14, 0.55, 1.0), (0.62, 0.38, 0.96, 0.7), radius_dp=9)
+
+        if hasattr(self, "voice_live_pill"):
+            if not active:
+                self.voice_live_pill.text = "[color=64748b]● Background Mic Ready — tap MIC & speak freely[/color]"
+                style_card(self.voice_card, (0.035, 0.055, 0.11, 1.0), (0.08, 0.38, 0.55, 0.5), radius_dp=10)
+            else:
+                style_card(self.voice_card, (0.035, 0.095, 0.14, 1.0), (0.12, 0.88, 0.62, 0.85), radius_dp=10)
+                if partial_text:
+                    shown = escape_markup(partial_text[-58:])
+                    self.voice_live_pill.text = f"[b][color=34d399]● Sun raha hoon:[/color][/b] [color=e2e8f0]{shown}[/color]"
+                    self._last_partial_shown = shown
+                elif rms_db is not None:
+                    bars = max(1, min(5, int((rms_db + 2.0) / 2.2)))
+                    meter = "|" * bars + "." * (5 - bars)
+                    prev = getattr(self, "_last_partial_shown", "")
+                    if prev:
+                        self.voice_live_pill.text = f"[b][color=34d399]● [{meter}][/color][/b] [color=e2e8f0]{prev}[/color]"
+                    else:
+                        self.voice_live_pill.text = f"[b][color=34d399]● [{meter}] Bolo Harish...[/color][/b]"
+                else:
+                    self._last_partial_shown = ""
+                    self.voice_live_pill.text = "[b][color=34d399]● Mic ON — bolo Harish (No popup)[/color][/b]"
+
     def _on_voice_transcript(self, spoken_text):
+        self._last_partial_shown = ""
+        self._on_voice_partial("", 0.0, active=False)
         self.chat_input.text = spoken_text
         self._send_chat_prompt()
 
@@ -2062,7 +2290,7 @@ class NeonProMobileSuite(BoxLayout):
         root = BoxLayout(orientation="vertical", spacing=dp(6))
 
         default_ci_workflow = (
-            "name: NEON PRO - Auto Build Android APK\n"
+            "name: NEON PRO - Build Android APK & Windows EXE\n"
             "on:\n"
             "  push:\n"
             "    branches: [ main, master ]\n"
@@ -2104,20 +2332,41 @@ class NeonProMobileSuite(BoxLayout):
             "        with:\n"
             "          name: NeonMobile-Android-APK\n"
             "          path: bin/*.apk\n"
+            "          if-no-files-found: error\n\n"
+            "  build_exe:\n"
+            "    name: Build Windows Standalone EXE\n"
+            "    runs-on: windows-latest\n"
+            "    steps:\n"
+            "      - uses: actions/checkout@v4\n"
+            "      - uses: actions/setup-python@v5\n"
+            "        with:\n"
+            "          python-version: '3.10'\n"
+            "      - name: Install Windows Build Deps\n"
+            "        run: |\n"
+            "          python -m pip install --upgrade pip\n"
+            "          pip install kivy requests certifi urllib3 pyinstaller\n"
+            "      - name: Compile Windows EXE\n"
+            "        run: |\n"
+            '          pyinstaller --noconsole --onefile --clean --name "NeonMobile_Windows" main.py\n'
+            "      - name: Upload Windows EXE\n"
+            "        uses: actions/upload-artifact@v4\n"
+            "        with:\n"
+            "          name: NeonMobile-Windows-EXE\n"
+            "          path: dist/*.exe\n"
             "          if-no-files-found: error\n"
         )
 
         self.active_studio_file = "main.py"
         self.studio_files = {
-            "main.py": "# NEON PRO v4.4 Mobile Core\nprint('NEON PRO Running on Android!')\n",
+            "main.py": "# NEON PRO v4.5 Mobile Core\nprint('NEON PRO Running on Android & Windows!')\n",
             "buildozer.spec": (
                 "[app]\n"
-                "title = NEON PRO App\n"
-                "package.name = neonproapp\n"
+                "title = NEON PRO Mobile\n"
+                "package.name = neonpromobile\n"
                 "package.domain = org.harish.neon\n"
                 "source.dir = .\n"
                 "source.include_exts = py,png,jpg,kv,atlas,json\n"
-                "version = 0.3\n"
+                "version = 0.4\n"
                 "requirements = python3,kivy==2.3.0,openssl,requests==2.31.0,urllib3==2.2.1,certifi==2024.2.2,charset-normalizer==3.3.2,idna==3.6,pyjnius,android\n"
                 "orientation = portrait\n"
                 "fullscreen = 0\n"
@@ -2220,8 +2469,8 @@ class NeonProMobileSuite(BoxLayout):
         gen_row.add_widget(self.studio_gen_btn)
         root.add_widget(gen_row)
 
-        # User-Friendly 1-Tap Action Strip
-        act_row = BoxLayout(size_hint_y=None, height=dp(36), spacing=dp(5))
+        # User-Friendly Action & Dual Download Strip
+        act_row = BoxLayout(size_hint_y=None, height=dp(32), spacing=dp(5))
         chk_btn = make_button(
             "Check Code",
             (0.06, 0.16, 0.28, 1.0),
@@ -2255,17 +2504,42 @@ class NeonProMobileSuite(BoxLayout):
         fix_btn.bind(on_release=lambda *_: self._send_code_to_debugger())
         act_row.add_widget(fix_btn)
 
+        tok_btn = make_button(
+            "Get Token",
+            (0.24, 0.15, 0.04, 1.0),
+            (0.95, 0.68, 0.18, 0.75),
+            text_rgba=(1.0, 0.86, 0.42, 1.0),
+            radius_dp=8,
+            font_sp=10,
+        )
+        tok_btn.bind(on_release=lambda *_: self._open_github_token_modal())
+        act_row.add_widget(tok_btn)
+        root.add_widget(act_row)
+
+        # Two Clear Download Buttons: Download APK File + Download EXE File
+        dl_row = BoxLayout(size_hint_y=None, height=dp(36), spacing=dp(6))
         self.studio_apk_btn = make_button(
-            "Build APK",
+            "Download APK File",
             (0.04, 0.52, 0.38, 1.0),
             (0.16, 0.92, 0.62, 0.88),
             text_rgba=(1.0, 1.0, 1.0, 1.0),
             radius_dp=8,
             font_sp=11,
         )
-        self.studio_apk_btn.bind(on_release=lambda *_: self._trigger_one_tap_apk_build())
-        act_row.add_widget(self.studio_apk_btn)
-        root.add_widget(act_row)
+        self.studio_apk_btn.bind(on_release=lambda *_: self._trigger_one_tap_apk_build(target="apk"))
+        dl_row.add_widget(self.studio_apk_btn)
+
+        self.studio_exe_btn = make_button(
+            "Download EXE File",
+            (0.12, 0.24, 0.62, 1.0),
+            (0.32, 0.62, 0.98, 0.88),
+            text_rgba=(1.0, 1.0, 1.0, 1.0),
+            radius_dp=8,
+            font_sp=11,
+        )
+        self.studio_exe_btn.bind(on_release=lambda *_: self._trigger_one_tap_apk_build(target="exe"))
+        dl_row.add_widget(self.studio_exe_btn)
+        root.add_widget(dl_row)
 
         editor_card = BoxLayout(orientation="vertical", padding=dp(8), spacing=dp(5))
         style_card(editor_card, (0.025, 0.035, 0.068, 1.0), (0.08, 0.25, 0.38, 0.6), radius_dp=12)
@@ -2512,16 +2786,19 @@ class NeonProMobileSuite(BoxLayout):
         except Exception as err:
             self.studio_status_lbl.text = f"[color=f87171]ZIP Save Error: {escape_markup(str(err))}[/color]"
 
-    def _trigger_one_tap_apk_build(self):
+    def _trigger_one_tap_apk_build(self, target="apk"):
         self._save_active_studio_buffer()
         self._switch_tab("github")
+        if target == "exe":
+            self._export_exe_bundle()
         if not self.github_token:
             self.gh_log.text = (
-                "[b][color=fbbf24]Step 1:[/color][/b] Upar GitHub Token paste karo (sirf ek baar save hota hai).\n"
-                "[b][color=34d399]Step 2:[/color][/b] Fir 'Build Real APK' button dabao — main.py, buildozer.spec, requirements.txt aur Cloud YML sab khud push ho jayenge!"
+                "[b][color=fbbf24]Token 1-Baar Setup Karein:[/color][/b] 'Get Token' dabao → Token copy karo → 'Paste' dabao.\n"
+                "[b][color=34d399]Note:[/color][/b] Ek baar save hone ke baad har naye app me yehi token khud kaam karega!"
             )
+            self._open_github_token_modal()
             return
-        self._gh_push_studio_app()
+        self._gh_push_studio_app(target=target)
 
     def _send_code_to_debugger(self):
         self._save_active_studio_buffer()
@@ -2784,7 +3061,7 @@ class NeonProMobileSuite(BoxLayout):
         self.lab_scroll = ScrollView(size_hint=(1, 1), do_scroll_x=False)
         self.lab_log = AutoLabel(
             text=(
-                "[color=22d3ee][b]NEON PRO Build & Device Lab v4.4[/b][/color]\n"
+                "[color=22d3ee][b]NEON PRO Build & Device Lab v4.5[/b][/color]\n"
                 "[color=34d399]Operator: Harish | Platform: "
                 f"{platform.upper()} ({sys_platform.machine()})[/color]\n"
                 f"[color=94a3b8]Python: {sys.version.split()[0]} | Screen: {Window.width}x{Window.height}[/color]\n"
@@ -2842,7 +3119,7 @@ class NeonProMobileSuite(BoxLayout):
             return
         elif "status" in low:
             lines.extend([
-                "[color=34d399]• App Engine:[/color] NEON PRO v4.4 All-in-One Mobile Builder",
+                "[color=34d399]• App Engine:[/color] NEON PRO v4.5 All-in-One Mobile Builder",
                 f"[color=34d399]• Active Model:[/color] {self.selected_model}",
                 f"[color=34d399]• API Key:[/color] {'Configured' if self.api_key else 'Not Set (Tap Set Key)'}",
                 f"[color=34d399]• Hands-Free:[/color] {'ON' if self.hands_free_mode else 'OFF'} | Persona: {self.voice_persona}",
@@ -2863,81 +3140,128 @@ class NeonProMobileSuite(BoxLayout):
         Clock.schedule_once(lambda _dt: setattr(self.lab_scroll, "scroll_y", 0), 0.05)
 
     # ------------------------------------------------------------------
-    # TAB 5: GET APK (1-Tap Cloud APK Builder Directly from Phone)
+    # TAB 5: APK / EXE DOWNLOAD HUB & DEDICATED TOKEN GENERATOR
     # ------------------------------------------------------------------
     def _build_github_tab(self):
         root = BoxLayout(orientation="vertical", spacing=dp(8))
 
-        card = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(224), padding=dp(10), spacing=dp(6))
+        card = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(260), padding=dp(10), spacing=dp(6))
         style_card(card, (0.04, 0.055, 0.115, 1.0), (0.55, 0.30, 0.85, 0.55), radius_dp=12)
         card.add_widget(
             AutoLabel(
-                text="[b][color=c084fc]1-Tap Cloud APK Builder[/color][/b] [color=94a3b8]• Auto-pushes all 4 files & builds .apk[/color]",
+                text="[b][color=c084fc]Dual Cloud Builder (APK & EXE)[/color][/b] [color=94a3b8]• Token Once, Build Forever[/color]",
                 font_size=sp(12),
             )
         )
 
+        self.gh_token_status_lbl = AutoLabel(
+            text=(
+                "[color=34d399]✓ Token Saved Permanently — Ready for ALL new apps![/color]"
+                if self.github_token
+                else "[color=fbbf24]GitHub Token sirf 1 baar chahiye → 'Get Token' dabao![/color]"
+            ),
+            font_size=sp(10),
+        )
+        card.add_widget(self.gh_token_status_lbl)
+
+        tok_row = BoxLayout(size_hint_y=None, height=dp(38), spacing=dp(5))
         self.gh_token_input = TextInput(
             text=self.github_token,
-            hint_text="Step 1: Paste GitHub Token once (saved safely)...",
+            hint_text="Paste GitHub Token once (saved forever)...",
             password=True,
             multiline=False,
-            size_hint_y=None,
-            height=dp(38),
             background_color=(0.02, 0.03, 0.06, 1.0),
             foreground_color=(1, 1, 1, 1),
             hint_text_color=(0.45, 0.55, 0.68, 1.0),
             font_size=sp(12),
             padding=[dp(10), dp(9), dp(10), dp(9)],
         )
-        card.add_widget(self.gh_token_input)
+        tok_row.add_widget(self.gh_token_input)
+
+        paste_tok_btn = make_button(
+            "Paste",
+            (0.12, 0.16, 0.34, 1.0),
+            (0.35, 0.55, 0.96, 0.7),
+            radius_dp=8,
+            font_sp=10,
+            size_hint_x=None,
+            width=dp(56),
+        )
+        paste_tok_btn.bind(on_release=lambda *_: self._paste_token_from_clipboard())
+        tok_row.add_widget(paste_tok_btn)
+
+        get_tok_btn = make_button(
+            "Get Token",
+            (0.24, 0.15, 0.04, 1.0),
+            (0.95, 0.68, 0.18, 0.78),
+            text_rgba=(1.0, 0.86, 0.42, 1.0),
+            radius_dp=8,
+            font_sp=10,
+            size_hint_x=None,
+            width=dp(76),
+        )
+        get_tok_btn.bind(on_release=lambda *_: self._open_github_token_modal())
+        tok_row.add_widget(get_tok_btn)
+        card.add_widget(tok_row)
 
         self.gh_repo_input = TextInput(
             text=self.github_repo,
-            hint_text="App Repo Name (e.g. my-neon-apk)",
+            hint_text="App Repo Name (e.g. neon-pro-harish)",
             multiline=False,
             size_hint_y=None,
-            height=dp(38),
+            height=dp(36),
             background_color=(0.02, 0.03, 0.06, 1.0),
             foreground_color=(1, 1, 1, 1),
             hint_text_color=(0.45, 0.55, 0.68, 1.0),
             font_size=sp(12),
-            padding=[dp(10), dp(9), dp(10), dp(9)],
+            padding=[dp(10), dp(8), dp(10), dp(8)],
         )
         card.add_widget(self.gh_repo_input)
 
-        btn_row = BoxLayout(size_hint_y=None, height=dp(38), spacing=dp(5))
+        # Two Prominent Download Buttons: Download APK File + Download EXE File
+        dl_btn_row = BoxLayout(size_hint_y=None, height=dp(38), spacing=dp(6))
         self.gh_push_btn = make_button(
-            "Build Real APK",
-            (0.05, 0.52, 0.40, 1.0),
-            (0.15, 0.88, 0.62, 0.85),
+            "Download APK File",
+            (0.04, 0.52, 0.38, 1.0),
+            (0.15, 0.90, 0.62, 0.88),
             radius_dp=8,
             font_sp=11,
         )
-        self.gh_push_btn.bind(on_release=lambda *_: self._gh_push_studio_app())
-        btn_row.add_widget(self.gh_push_btn)
+        self.gh_push_btn.bind(on_release=lambda *_: self._gh_push_studio_app(target="apk"))
+        dl_btn_row.add_widget(self.gh_push_btn)
 
+        self.gh_exe_btn = make_button(
+            "Download EXE File",
+            (0.12, 0.24, 0.62, 1.0),
+            (0.32, 0.62, 0.98, 0.88),
+            radius_dp=8,
+            font_sp=11,
+        )
+        self.gh_exe_btn.bind(on_release=lambda *_: self._gh_download_exe_action())
+        dl_btn_row.add_widget(self.gh_exe_btn)
+        card.add_widget(dl_btn_row)
+
+        util_row = BoxLayout(size_hint_y=None, height=dp(34), spacing=dp(6))
         self.gh_runs_btn = make_button(
             "Check Status",
             (0.28, 0.16, 0.58, 1.0),
             (0.65, 0.42, 0.95, 0.7),
             radius_dp=8,
-            font_sp=11,
+            font_sp=10,
         )
         self.gh_runs_btn.bind(on_release=lambda *_: self._gh_check_runs())
-        btn_row.add_widget(self.gh_runs_btn)
+        util_row.add_widget(self.gh_runs_btn)
 
         self.gh_open_btn = make_button(
-            "Open Download",
+            "Open CI Downloads",
             (0.08, 0.22, 0.42, 1.0),
             (0.25, 0.62, 0.96, 0.7),
             radius_dp=8,
-            font_sp=11,
+            font_sp=10,
         )
         self.gh_open_btn.bind(on_release=lambda *_: self._gh_open_actions_browser())
-        btn_row.add_widget(self.gh_open_btn)
-
-        card.add_widget(btn_row)
+        util_row.add_widget(self.gh_open_btn)
+        card.add_widget(util_row)
         root.add_widget(card)
 
         out_card = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(6))
@@ -2945,10 +3269,10 @@ class NeonProMobileSuite(BoxLayout):
         gh_scroll = ScrollView(size_hint=(1, 1), do_scroll_x=False)
         self.gh_log = AutoLabel(
             text=(
-                "[b][color=22d3ee]Easy 3-Step APK Guide:[/color][/b]\n"
-                "[color=cbd5e1]1. Paste your GitHub Token once above.\n"
-                "2. Tap 'Build Real APK' — pushes main.py, buildozer.spec, requirements.txt & CI YML automatically.\n"
-                "3. Wait ~5 min, tap 'Check Status' or 'Open Download' to install your real .apk![/color]"
+                "[b][color=22d3ee]NEON PRO Download Hub (APK + EXE):[/color][/b]\n"
+                "[color=cbd5e1]1. Token sirf 1 baar save karein ('Get Token' ya 'Paste' dabakar) — har naye app me yehi token khud chalega.\n"
+                "2. 'Download APK File' → Android Phone ke liye installable .apk banata hai.\n"
+                "3. 'Download EXE File' → Windows PC ke liye standalone .exe aur EXE bundle deta hai![/color]"
             ),
             font_size=sp(12),
         )
@@ -2956,6 +3280,209 @@ class NeonProMobileSuite(BoxLayout):
         out_card.add_widget(gh_scroll)
         root.add_widget(out_card)
         return root
+
+    def _auto_detect_clipboard_token(self):
+        if self.github_token:
+            if hasattr(self, "gh_token_status_lbl"):
+                self.gh_token_status_lbl.text = "[color=34d399]✓ Token Saved Permanently — Ready for ALL new apps![/color]"
+            return
+        try:
+            clip = (Clipboard.paste() or "").strip()
+            if clip.startswith("ghp_") or clip.startswith("github_pat_"):
+                self.github_token = clip
+                self._save_config()
+                if hasattr(self, "gh_token_input"):
+                    self.gh_token_input.text = clip
+                if hasattr(self, "gh_token_status_lbl"):
+                    self.gh_token_status_lbl.text = "[color=34d399]✓ Clipboard se GitHub Token auto-save ho gaya![/color]"
+                if hasattr(self, "gh_log"):
+                    self.gh_log.text = "[color=34d399][b]✓ GitHub Token clipboard se auto-detect & save ho gaya Harish![/b]\nAb seedha 'Download APK File' ya 'Download EXE File' dabao.[/color]"
+        except Exception:
+            pass
+
+    def _paste_token_from_clipboard(self, target_input=None, status_lbl=None):
+        try:
+            clip = (Clipboard.paste() or "").strip()
+        except Exception:
+            clip = ""
+        if not clip:
+            msg = "[color=fbbf24]Clipboard khali hai — pehle 'Get Token' page se token copy karein.[/color]"
+            if status_lbl is not None:
+                status_lbl.text = msg
+            elif hasattr(self, "gh_log"):
+                self.gh_log.text = msg
+            return False
+        if target_input is not None:
+            target_input.text = clip
+        if hasattr(self, "gh_token_input"):
+            self.gh_token_input.text = clip
+        self.github_token = clip
+        self._save_config()
+        ok_msg = "[color=34d399]✓ Token pasted & saved permanently for all new apps![/color]"
+        if status_lbl is not None:
+            status_lbl.text = ok_msg
+        if hasattr(self, "gh_token_status_lbl"):
+            self.gh_token_status_lbl.text = ok_msg
+        return True
+
+    def _open_github_token_modal(self):
+        modal = ModalView(size_hint=(0.94, None), height=dp(440), background_color=(0, 0, 0, 0.80))
+        box = BoxLayout(orientation="vertical", padding=dp(14), spacing=dp(8))
+        style_card(box, (0.04, 0.06, 0.12, 1.0), (0.95, 0.68, 0.18, 0.80), radius_dp=16, border_width=1.4)
+
+        hdr = BoxLayout(size_hint_y=None, height=dp(32))
+        hdr.add_widget(
+            AutoLabel(text="[b][color=fbbf24]GitHub Token Helper (Sirf 1 Baar)[/color][/b]", font_size=sp(14))
+        )
+        close_btn = make_button(
+            "Close",
+            (0.18, 0.08, 0.12, 1.0),
+            (0.85, 0.28, 0.38, 0.65),
+            radius_dp=8,
+            font_sp=11,
+            size_hint=(None, None),
+            size=(dp(62), dp(28)),
+        )
+        close_btn.bind(on_release=lambda *_: modal.dismiss())
+        hdr.add_widget(close_btn)
+        box.add_widget(hdr)
+
+        box.add_widget(
+            AutoLabel(
+                text=(
+                    "[color=e2e8f0]1. Neeche '1. Open GitHub Token Page' dabao (repo + workflow khud tick rahenge).\n"
+                    "2. Page ke neeche 'Generate token' dabao aur ghp_... token Copy karo.\n"
+                    "3. Wapas aake '2. Auto-Paste & Save' dabao — har naye app me yahi save rahega![/color]"
+                ),
+                font_size=sp(11),
+            )
+        )
+
+        open_gh_btn = make_button(
+            "1. Open GitHub Token Page (Auto-Filled)",
+            (0.08, 0.24, 0.48, 1.0),
+            (0.25, 0.68, 0.98, 0.85),
+            radius_dp=10,
+            font_sp=12,
+            size_hint_y=None,
+            height=dp(40),
+        )
+        open_gh_btn.bind(
+            on_release=lambda *_: webbrowser.open(
+                "https://github.com/settings/tokens/new?description=NEON-PRO-Harish&scopes=repo,workflow"
+            )
+        )
+        box.add_widget(open_gh_btn)
+
+        tok_inp = TextInput(
+            text=self.github_token,
+            hint_text="Copied GitHub Token yahan dikhega (ghp_...)",
+            password=True,
+            multiline=False,
+            size_hint_y=None,
+            height=dp(40),
+            background_color=(0.02, 0.03, 0.06, 1.0),
+            foreground_color=(1, 1, 1, 1),
+            font_size=sp(12),
+            padding=[dp(10), dp(9), dp(10), dp(9)],
+        )
+        box.add_widget(tok_inp)
+
+        status_lbl = AutoLabel(
+            text=(
+                "[color=34d399]✓ Token already saved permanently.[/color]"
+                if self.github_token
+                else "[color=94a3b8]Copy karne ke baad neeche Auto-Paste dabao.[/color]"
+            ),
+            font_size=sp(11),
+        )
+        box.add_widget(status_lbl)
+
+        paste_btn = make_button(
+            "2. Auto-Paste & Verify Forever",
+            (0.04, 0.52, 0.38, 1.0),
+            (0.16, 0.92, 0.62, 0.85),
+            radius_dp=10,
+            font_sp=12,
+            size_hint_y=None,
+            height=dp(42),
+        )
+
+        def _do_verify_save(*_a):
+            if not tok_inp.text.strip():
+                self._paste_token_from_clipboard(tok_inp, status_lbl)
+            cand = tok_inp.text.strip()
+            if not cand:
+                return
+            self.github_token = cand
+            if hasattr(self, "gh_token_input"):
+                self.gh_token_input.text = cand
+            self._save_config()
+            status_lbl.text = "[color=38bdf8]Verifying token with GitHub...[/color]"
+            paste_btn.disabled = True
+
+            def _vwork():
+                code, user = self._gh_get("https://api.github.com/user", cand)
+                def _vdone(_dt):
+                    paste_btn.disabled = False
+                    if code == 200 and isinstance(user, dict) and user.get("login"):
+                        self._gh_owner_cache = user["login"]
+                        if hasattr(self, "gh_token_status_lbl"):
+                            self.gh_token_status_lbl.text = f"[color=34d399]✓ Connected @{user['login']} — Saved Forever![/color]"
+                        status_lbl.text = f"[color=34d399]✓ Verified @{user['login']}! Ab sabhi apps me khud save rahega.[/color]"
+                        Clock.schedule_once(lambda _dt2: modal.dismiss(), 1.1)
+                    else:
+                        status_lbl.text = f"[color=fbbf24]Token saved locally (GitHub status {code}) — repo + workflow scope check karein.[/color]"
+                Clock.schedule_once(_vdone, 0)
+
+            threading.Thread(target=_vwork, daemon=True).start()
+
+        paste_btn.bind(on_release=_do_verify_save)
+        box.add_widget(paste_btn)
+
+        modal.add_widget(box)
+        modal.open()
+
+    def _export_exe_bundle(self):
+        self._save_active_studio_buffer()
+        try:
+            proj_dir = os.path.join(self._get_data_dir(), "autonomous_projects")
+            os.makedirs(proj_dir, exist_ok=True)
+            zip_path = os.path.join(proj_dir, "NEON_Windows_EXE_Package.zip")
+            bat_content = (
+                "@echo off\r\n"
+                "python -m pip install --upgrade pip\r\n"
+                "pip install -r requirements.txt pyinstaller\r\n"
+                'pyinstaller --noconsole --onefile --clean --name "NeonMobile_Windows" main.py\r\n'
+                "echo Ready: dist\\NeonMobile_Windows.exe\r\npause\r\n"
+            )
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for rel_path, content in self.studio_files.items():
+                    zf.writestr(rel_path, content)
+                zf.writestr("build_windows_exe.bat", bat_content)
+            saved_loc = zip_path
+            if platform == "android":
+                dl_path = "/sdcard/Download/NEON_Windows_EXE_Package.zip"
+                try:
+                    shutil.copyfile(zip_path, dl_path)
+                    saved_loc = dl_path
+                except Exception:
+                    pass
+            return saved_loc
+        except Exception:
+            return None
+
+    def _gh_download_exe_action(self):
+        saved_loc = self._export_exe_bundle()
+        if self.github_token:
+            self._gh_push_studio_app(target="exe", local_exe_zip=saved_loc)
+        elif saved_loc:
+            self.gh_log.text = (
+                f"[color=34d399][b]✓ Windows EXE Builder Package saved:[/b] {escape_markup(saved_loc)}[/color]\n"
+                "[color=cbd5e1]Direct cloud .exe compile karne ke liye upar 1-baar 'Get Token' se token save kar lo![/color]"
+            )
+        else:
+            self._open_github_token_modal()
 
     def _gh_open_actions_browser(self):
         repo = self.gh_repo_input.text.strip() or self.github_repo or "neon-pro-harish"
@@ -3029,15 +3556,15 @@ class NeonProMobileSuite(BoxLayout):
             return code, {"message": txt}
 
     def _gh_check_runs(self):
-        token = self.gh_token_input.text.strip()
+        token = self.gh_token_input.text.strip() or self.github_token
         repo = self.gh_repo_input.text.strip() or "neon-pro-harish"
         self.github_token = token
         self.github_repo = repo
         self._save_config()
         if not token:
-            self.gh_log.text = "[color=fbbf24]Please paste your GitHub Token first.[/color]"
+            self.gh_log.text = "[color=fbbf24]Please tap 'Get Token' or paste your GitHub Token first.[/color]"
             return
-        self.gh_log.text = "[color=38bdf8]Checking APK builds & downloads...[/color]"
+        self.gh_log.text = "[color=38bdf8]Checking APK & EXE builds & downloads...[/color]"
 
         def _worker():
             code, user = self._gh_get("https://api.github.com/user", token)
@@ -3052,51 +3579,60 @@ class NeonProMobileSuite(BoxLayout):
                 token,
             )
             if rc != 200:
-                msg = f"[color=fbbf24]Repo '{owner}/{repo}' not found yet — tap 'Build Real APK' first.[/color]"
+                msg = f"[color=fbbf24]Repo '{owner}/{repo}' not found yet — tap 'Download APK File' first.[/color]"
                 Clock.schedule_once(lambda _dt: setattr(self.gh_log, "text", msg), 0)
                 return
             lines = [f"[b][color=34d399]Repo: {owner}/{repo}[/color][/b]"]
             for r in runs_data.get("workflow_runs", [])[:5]:
                 st = r.get("conclusion") or r.get("status")
                 clr = "34d399" if st == "success" else ("f87171" if st == "failure" else "38bdf8")
-                lines.append(f"[color={clr}]• {escape_markup(r.get('name', 'APK Build'))}: {st}[/color]")
+                lines.append(f"[color={clr}]• {escape_markup(r.get('name', 'APK + EXE Build'))}: {st}[/color]")
 
             ac, art_data = self._gh_get(
-                f"https://api.github.com/repos/{owner}/{repo}/actions/artifacts?per_page=3",
+                f"https://api.github.com/repos/{owner}/{repo}/actions/artifacts?per_page=4",
                 token,
             )
             if ac == 200 and isinstance(art_data, dict):
                 arts = art_data.get("artifacts", [])
                 if arts:
-                    lines.append("\n[b][color=22d3ee]Ready APK Artifacts:[/color][/b]")
-                    for a in arts[:3]:
+                    lines.append("\n[b][color=22d3ee]Ready Downloads (APK & EXE):[/color][/b]")
+                    for a in arts[:4]:
                         mb = round((a.get("size_in_bytes", 0) or 0) / (1024 * 1024), 1)
-                        lines.append(f"[color=34d399]✓ {escape_markup(a.get('name', 'APK'))} ({mb} MB)[/color]")
-            lines.append(f"\n[color=94a3b8]Tap 'Open Download' or visit:\nhttps://github.com/{owner}/{repo}/actions[/color]")
+                        lines.append(f"[color=34d399]✓ {escape_markup(a.get('name', 'Artifact'))} ({mb} MB)[/color]")
+            lines.append(f"\n[color=94a3b8]Tap 'Open CI Downloads' to download .apk & .exe:\nhttps://github.com/{owner}/{repo}/actions[/color]")
             final_txt = "\n".join(lines)
             Clock.schedule_once(lambda _dt: setattr(self.gh_log, "text", final_txt), 0)
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _gh_push_studio_app(self):
+    def _gh_push_studio_app(self, target="apk", local_exe_zip=None):
         self._save_active_studio_buffer()
-        token = self.gh_token_input.text.strip()
+        token = self.gh_token_input.text.strip() or self.github_token
         repo = self.gh_repo_input.text.strip() or "neon-pro-harish"
         self.github_token = token
         self.github_repo = repo
         self._save_config()
         if not token:
-            self.gh_log.text = "[color=fbbf24]Step 1: Upar GitHub Token paste karo, fir 'Build Real APK' dabao.[/color]"
+            self.gh_log.text = "[color=fbbf24]Step 1: 'Get Token' dabakar GitHub Token save karo (sirf 1 baar), fir 'Download APK File' ya 'Download EXE File' dabao.[/color]"
+            self._open_github_token_modal()
             return
         self.gh_push_btn.disabled = True
-        self.gh_log.text = "[color=38bdf8]Pushing all 4 APK build files (main.py, buildozer.spec, requirements.txt, CI YML)...[/color]"
+        if hasattr(self, "gh_exe_btn"):
+            self.gh_exe_btn.disabled = True
+        label_mode = "Windows .EXE + Android .APK" if target == "exe" else "Android .APK + Windows .EXE"
+        self.gh_log.text = f"[color=38bdf8]Building {label_mode} via GitHub Cloud CI...[/color]"
         files_bundle = dict(self.studio_files)
 
         def _worker():
             code, user = self._gh_get("https://api.github.com/user", token)
             if code != 200:
-                msg = f"[color=f87171]GitHub Auth Failed ({code}): Check token scopes (repo + workflow).[/color]"
-                Clock.schedule_once(lambda _dt: (setattr(self.gh_push_btn, "disabled", False), setattr(self.gh_log, "text", msg)), 0)
+                msg = f"[color=f87171]GitHub Auth Failed ({code}): 'Get Token' dabakar repo + workflow tick wala token save karein.[/color]"
+                def _auth_fail(_dt):
+                    self.gh_push_btn.disabled = False
+                    if hasattr(self, "gh_exe_btn"):
+                        self.gh_exe_btn.disabled = False
+                    self.gh_log.text = msg
+                Clock.schedule_once(_auth_fail, 0)
                 return
             owner = user.get("login", "")
             self._gh_owner_cache = owner
@@ -3126,7 +3662,7 @@ class NeonProMobileSuite(BoxLayout):
                 f_url = f"https://api.github.com/repos/{owner}/{repo}/contents/{target_path}"
                 ex_code, ex_data = self._gh_get(f"{f_url}?ref={branch}", token)
                 put_body = {
-                    "message": f"[NEON PRO v4.4] Update {target_path}",
+                    "message": f"[NEON PRO v4.5] Update {target_path}",
                     "content": base64.b64encode(content_str.encode("utf-8")).decode("ascii"),
                     "branch": branch,
                 }
@@ -3140,18 +3676,25 @@ class NeonProMobileSuite(BoxLayout):
                     errors.append(f"{target_path}: {p_code} {err_m}")
 
             if pushed_ok and not errors:
+                extra_exe = f"\n[color=38bdf8]Local Windows EXE Builder ZIP: {escape_markup(local_exe_zip)}[/color]" if local_exe_zip else ""
                 msg = (
-                    f"[color=34d399][b]✓ All {len(pushed_ok)} files pushed & APK build started![/b][/color]\n"
-                    f"[color=cbd5e1]Files: {', '.join(pushed_ok)}\n"
-                    f"Wait ~5 mins, then tap 'Check Status' or 'Open Download':\n"
-                    f"https://github.com/{owner}/{repo}/actions[/color]"
+                    f"[color=34d399][b]✓ {label_mode} cloud build started![/b][/color]\n"
+                    f"[color=cbd5e1]Pushed {', '.join(pushed_ok)}.\n"
+                    f"Artifacts ready in ~4 min: NeonMobile-Android-APK (.apk) & NeonMobile-Windows-EXE (.exe).\n"
+                    f"Tap 'Check Status' or 'Open CI Downloads':\n"
+                    f"https://github.com/{owner}/{repo}/actions[/color]{extra_exe}"
                 )
             else:
                 msg = (
                     f"[color=fbbf24]Pushed: {len(pushed_ok)} | Issues: {len(errors)}[/color]\n"
                     + escape_markup("\n".join(errors))
                 )
-            Clock.schedule_once(lambda _dt: (setattr(self.gh_push_btn, "disabled", False), setattr(self.gh_log, "text", msg)), 0)
+            def _done(_dt):
+                self.gh_push_btn.disabled = False
+                if hasattr(self, "gh_exe_btn"):
+                    self.gh_exe_btn.disabled = False
+                self.gh_log.text = msg
+            Clock.schedule_once(_done, 0)
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -3198,21 +3741,34 @@ class NeonProMobileSuite(BoxLayout):
         box.add_widget(key_inp)
 
         box.add_widget(
-            AutoLabel(text="[color=cbd5e1]GitHub Token (Optional — for 1-Tap Build APK):[/color]", font_size=sp(11))
+            AutoLabel(text="[color=cbd5e1]GitHub Token (1-Baar Save — Har Naye App Me Chalega):[/color]", font_size=sp(11))
         )
+        gh_row = BoxLayout(size_hint_y=None, height=dp(40), spacing=dp(5))
         gh_inp = TextInput(
             text=self.github_token,
             hint_text="Paste GitHub Token (ghp_...)",
             password=True,
             multiline=False,
-            size_hint_y=None,
-            height=dp(40),
             background_color=(0.02, 0.03, 0.06, 1.0),
             foreground_color=(1, 1, 1, 1),
             font_size=sp(12),
             padding=[dp(10), dp(9), dp(10), dp(9)],
         )
-        box.add_widget(gh_inp)
+        gh_row.add_widget(gh_inp)
+
+        s_get_tok = make_button(
+            "Get Token",
+            (0.24, 0.15, 0.04, 1.0),
+            (0.95, 0.68, 0.18, 0.78),
+            text_rgba=(1.0, 0.86, 0.42, 1.0),
+            radius_dp=8,
+            font_sp=10,
+            size_hint_x=None,
+            width=dp(74),
+        )
+        s_get_tok.bind(on_release=lambda *_: (modal.dismiss(), self._open_github_token_modal()))
+        gh_row.add_widget(s_get_tok)
+        box.add_widget(gh_row)
 
         box.add_widget(AutoLabel(text="[color=cbd5e1]Select AI Model:[/color]", font_size=sp(11)))
         model_row = BoxLayout(size_hint_y=None, height=dp(34), spacing=dp(5))

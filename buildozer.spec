@@ -4,7 +4,7 @@ package.name = neonpromobile
 package.domain = org.harish.neon
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,json
-version = 0.1
+version = 0.4
 requirements = python3,kivy==2.3.0,openssl,requests==2.31.0,urllib3==2.2.1,certifi==2024.2.2,charset-normalizer==3.3.2,idna==3.6,pyjnius,android
 orientation = portrait
 fullscreen = 0
