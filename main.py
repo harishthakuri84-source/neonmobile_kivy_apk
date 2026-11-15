@@ -1,5 +1,5 @@
 """
-NEON PRO v4.2 - Autonomous Android Mobile & Desktop Suite
+NEON PRO v4.3 - Autonomous Android Mobile & Desktop Suite
 Architected for: Harish
 Features:
   - Complete Web Preview Parity (Console, App Studio, Debugger, Build Lab, GitHub CI)
@@ -54,6 +54,42 @@ from kivy.uix.textinput import TextInput
 from kivy.utils import platform
 
 # Fix SSL certificate bundle path on Termux / Android safely
+_FORCE_UNVERIFIED_SSL = False
+
+
+def _make_unverified_ssl_context():
+    try:
+        ctx = ssl._create_unverified_context()
+    except Exception:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
+def _activate_unverified_ssl_fallback():
+    global _FORCE_UNVERIFIED_SSL
+    _FORCE_UNVERIFIED_SSL = True
+    try:
+        ssl._create_default_https_context = _make_unverified_ssl_context
+    except Exception:
+        pass
+
+
+def _is_ssl_exception(err):
+    low = str(err).lower()
+    reason = getattr(err, "reason", None)
+    return (
+        isinstance(err, ssl.SSLError)
+        or isinstance(reason, ssl.SSLError)
+        or "certificate" in low
+        or "ssl" in low
+        or "verify" in low
+        or "tls" in low
+        or "eof occurred in violation" in low
+    )
+
+
 def _resolve_ca_bundle():
     candidates = []
     if certifi is not None:
@@ -73,6 +109,8 @@ def _resolve_ca_bundle():
 
 
 def _build_ssl_context():
+    if _FORCE_UNVERIFIED_SSL:
+        return _make_unverified_ssl_context(), False
     ca_file = _resolve_ca_bundle()
     if ca_file:
         try:
@@ -92,27 +130,22 @@ def _build_ssl_context():
             return ctx, True
     except Exception:
         pass
-    return ssl._create_unverified_context(), False
+    return _make_unverified_ssl_context(), False
 
 
 def _urlopen_with_ssl_retry(req, timeout=20):
     """Execute urllib Request with CA bundle and guaranteed Android/Termux SSL fallback."""
     ssl_ctx, _ = _build_ssl_context()
-    for ctx in (ssl_ctx, ssl._create_unverified_context()):
+    contexts = (_make_unverified_ssl_context(),) if _FORCE_UNVERIFIED_SSL else (ssl_ctx, _make_unverified_ssl_context())
+    for idx, ctx in enumerate(contexts):
         try:
             with urllib.request.urlopen(req, context=ctx, timeout=timeout) as uresp:
                 return uresp.getcode(), uresp.read().decode("utf-8", errors="replace")
         except urllib.error.HTTPError as herr:
             return herr.code, herr.read().decode("utf-8", errors="replace")
         except Exception as err:
-            low = str(err).lower()
-            is_ssl = (
-                isinstance(err, ssl.SSLError)
-                or isinstance(getattr(err, "reason", None), ssl.SSLError)
-                or "certificate" in low
-                or "ssl" in low
-            )
-            if is_ssl and ctx is not ssl._create_unverified_context():
+            if idx == 0 and len(contexts) > 1 and _is_ssl_exception(err):
+                _activate_unverified_ssl_fallback()
                 continue
             raise
     raise RuntimeError("Request failed")
@@ -465,15 +498,19 @@ class AndroidVoiceBridge:
             _ssl_ctx, req_verify = _build_ssl_context()
             if requests is not None:
                 try:
-                    resp = requests.post(url, json=payload, timeout=14, verify=req_verify)
-                except Exception as r_err:
-                    if "ssl" in str(r_err).lower() or "certificate" in str(r_err).lower():
-                        resp = requests.post(url, json=payload, timeout=14, verify=False)
-                    else:
-                        raise
-                if resp.status_code == 200:
-                    data = resp.json()
-            else:
+                    try:
+                        resp = requests.post(url, json=payload, timeout=14, verify=req_verify)
+                    except Exception as r_err:
+                        if _is_ssl_exception(r_err) and req_verify is not False:
+                            _activate_unverified_ssl_fallback()
+                            resp = requests.post(url, json=payload, timeout=14, verify=False)
+                        else:
+                            raise
+                    if resp.status_code == 200:
+                        data = resp.json()
+                except Exception:
+                    data = None
+            if data is None:
                 req = urllib.request.Request(
                     url,
                     data=json.dumps(payload).encode("utf-8"),
@@ -772,7 +809,7 @@ class NeonProMobileSuite(BoxLayout):
 
         title_col = BoxLayout(orientation="vertical", spacing=dp(1))
         title_lbl = Label(
-            text="[b][color=ffffff]NEON[/color] [color=22d3ee]PRO[/color][/b] [color=64748b]v4.2[/color]",
+            text="[b][color=ffffff]NEON[/color] [color=22d3ee]PRO[/color][/b] [color=64748b]v4.3[/color]",
             markup=True,
             font_size=sp(15),
             halign="left",
@@ -1562,13 +1599,18 @@ class NeonProMobileSuite(BoxLayout):
         _ssl_ctx, req_verify = _build_ssl_context()
         if requests is not None:
             try:
-                r = requests.get(url, timeout=15, verify=req_verify)
-            except Exception as r_err:
-                if "ssl" in str(r_err).lower() or "certificate" in str(r_err).lower():
-                    r = requests.get(url, timeout=15, verify=False)
-                else:
-                    raise
-            return r.status_code, (r.json() if r.status_code == 200 else r.text)
+                try:
+                    r = requests.get(url, timeout=15, verify=req_verify)
+                except Exception as r_err:
+                    if _is_ssl_exception(r_err) and req_verify is not False:
+                        _activate_unverified_ssl_fallback()
+                        r = requests.get(url, timeout=15, verify=False)
+                    else:
+                        raise
+                return r.status_code, (r.json() if r.status_code == 200 else r.text)
+            except Exception as outer_err:
+                if not _is_ssl_exception(outer_err):
+                    pass
         req = urllib.request.Request(url, method="GET")
         code, txt = _urlopen_with_ssl_retry(req, timeout=15)
         if code == 200:
@@ -1582,19 +1624,23 @@ class NeonProMobileSuite(BoxLayout):
         _ssl_ctx, req_verify = _build_ssl_context()
         if requests is not None:
             try:
-                resp = requests.post(url, json=payload, headers=hdrs, timeout=timeout, verify=req_verify)
-            except Exception as r_err:
-                if "ssl" in str(r_err).lower() or "certificate" in str(r_err).lower():
-                    resp = requests.post(url, json=payload, headers=hdrs, timeout=timeout, verify=False)
-                else:
-                    raise
-            data = None
-            if resp.status_code in (200, 201):
                 try:
-                    data = resp.json()
-                except Exception:
-                    data = None
-            return resp.status_code, resp.text, data
+                    resp = requests.post(url, json=payload, headers=hdrs, timeout=timeout, verify=req_verify)
+                except Exception as r_err:
+                    if _is_ssl_exception(r_err) and req_verify is not False:
+                        _activate_unverified_ssl_fallback()
+                        resp = requests.post(url, json=payload, headers=hdrs, timeout=timeout, verify=False)
+                    else:
+                        raise
+                data = None
+                if resp.status_code in (200, 201):
+                    try:
+                        data = resp.json()
+                    except Exception:
+                        data = None
+                return resp.status_code, resp.text, data
+            except Exception:
+                pass
         req = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
@@ -1717,10 +1763,14 @@ class NeonProMobileSuite(BoxLayout):
                 elif self.hands_free_mode:
                     Clock.schedule_once(lambda _d: self.voice_bridge.start_listening(), 0.4)
             else:
-                fail_msg = f"Bhai API error aaya: {err}. Settings me key check karein."
+                low_err = str(err or "").lower()
+                if "400" in low_err or "401" in low_err or "403" in low_err or "api key" in low_err:
+                    fail_msg = f"Bhai API Key issue lag raha hai ({err}). Settings me valid Gemini key check karein."
+                else:
+                    fail_msg = f"Bhai Network/API error aaya ({err}). Top bar me 'Self-Test' daba ke auto-heal chalayein ya internet check karein."
                 self._add_message_card("assistant", fail_msg, model_tag="Error")
                 if self.audio_enabled:
-                    self.voice_bridge.speak("Gemini API error aaya, please settings me key check karein.")
+                    self.voice_bridge.speak("Network ya API issue aaya hai Harish, please Self Test button dabao.")
 
         Clock.schedule_once(_done, 0)
 
@@ -1949,7 +1999,7 @@ class NeonProMobileSuite(BoxLayout):
 
         preset_row = BoxLayout(size_hint_y=None, height=dp(34), spacing=dp(6))
         self.studio_files = {
-            "main.py": "# NEON PRO v4.2 Mobile Core\nprint('NEON PRO Running on Android!')\n",
+            "main.py": "# NEON PRO v4.3 Mobile Core\nprint('NEON PRO Running on Android!')\n",
             "buildozer.spec": "[app]\ntitle = NEON PRO Mobile\npackage.name = neonpromobile\nandroid.api = 33\nandroid.minapi = 21\nandroid.ndk = 25b\nandroid.ndk_api = 21\np4a.branch = v2024.01.21\n",
             "requirements.txt": "kivy==2.3.0\nrequests==2.31.0\ncertifi==2024.2.2\nurllib3==2.2.1\n",
         }
@@ -2287,7 +2337,7 @@ class NeonProMobileSuite(BoxLayout):
         self.lab_scroll = ScrollView(size_hint=(1, 1), do_scroll_x=False)
         self.lab_log = AutoLabel(
             text=(
-                "[color=22d3ee][b]NEON PRO Build & Device Lab v4.2[/b][/color]\n"
+                "[color=22d3ee][b]NEON PRO Build & Device Lab v4.3[/b][/color]\n"
                 "[color=34d399]Operator: Harish | Platform: "
                 f"{platform.upper()} ({sys_platform.machine()})[/color]\n"
                 f"[color=94a3b8]Python: {sys.version.split()[0]} | Screen: {Window.width}x{Window.height}[/color]\n"
@@ -2345,7 +2395,7 @@ class NeonProMobileSuite(BoxLayout):
             return
         elif "status" in low:
             lines.extend([
-                "[color=34d399]• App Engine:[/color] NEON PRO v4.2 Mobile Suite",
+                "[color=34d399]• App Engine:[/color] NEON PRO v4.3 Mobile Suite",
                 f"[color=34d399]• Active Model:[/color] {self.selected_model}",
                 f"[color=34d399]• API Key:[/color] {'Configured' if self.api_key else 'Not Set (Tap Set Key)'}",
                 f"[color=34d399]• Hands-Free:[/color] {'ON' if self.hands_free_mode else 'OFF'} | Persona: {self.voice_persona}",
@@ -2458,13 +2508,17 @@ class NeonProMobileSuite(BoxLayout):
         _ssl_ctx, req_verify = _build_ssl_context()
         if requests is not None:
             try:
-                r = requests.get(url, headers=hdrs, timeout=20, verify=req_verify)
-            except Exception as r_err:
-                if "ssl" in str(r_err).lower() or "certificate" in str(r_err).lower():
-                    r = requests.get(url, headers=hdrs, timeout=20, verify=False)
-                else:
-                    raise
-            return r.status_code, (r.json() if r.content else {})
+                try:
+                    r = requests.get(url, headers=hdrs, timeout=20, verify=req_verify)
+                except Exception as r_err:
+                    if _is_ssl_exception(r_err) and req_verify is not False:
+                        _activate_unverified_ssl_fallback()
+                        r = requests.get(url, headers=hdrs, timeout=20, verify=False)
+                    else:
+                        raise
+                return r.status_code, (r.json() if r.content else {})
+            except Exception:
+                pass
         req = urllib.request.Request(url, headers=hdrs, method="GET")
         code, txt = _urlopen_with_ssl_retry(req, timeout=20)
         try:
@@ -2477,13 +2531,17 @@ class NeonProMobileSuite(BoxLayout):
         _ssl_ctx, req_verify = _build_ssl_context()
         if requests is not None:
             try:
-                r = requests.put(url, json=body, headers=hdrs, timeout=20, verify=req_verify)
-            except Exception as r_err:
-                if "ssl" in str(r_err).lower() or "certificate" in str(r_err).lower():
-                    r = requests.put(url, json=body, headers=hdrs, timeout=20, verify=False)
-                else:
-                    raise
-            return r.status_code, (r.json() if r.content else {})
+                try:
+                    r = requests.put(url, json=body, headers=hdrs, timeout=20, verify=req_verify)
+                except Exception as r_err:
+                    if _is_ssl_exception(r_err) and req_verify is not False:
+                        _activate_unverified_ssl_fallback()
+                        r = requests.put(url, json=body, headers=hdrs, timeout=20, verify=False)
+                    else:
+                        raise
+                return r.status_code, (r.json() if r.content else {})
+            except Exception:
+                pass
         req = urllib.request.Request(
             url, data=json.dumps(body).encode("utf-8"), headers=hdrs, method="PUT"
         )
