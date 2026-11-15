@@ -1101,7 +1101,7 @@ class NeonProMobileSuite(BoxLayout):
             ("app-studio", "App Builder"),
             ("debugger", "Auto-Fix"),
             ("terminal", "Device"),
-            ("github", "APK / EXE"),
+            ("github", "GitHub CI"),
         ]
         for key, label in tabs:
             btn = make_button(
@@ -2295,16 +2295,20 @@ class NeonProMobileSuite(BoxLayout):
             "  push:\n"
             "    branches: [ main, master ]\n"
             "  workflow_dispatch:\n\n"
+            "concurrency:\n"
+            "  group: neon-pro-build-${{ github.ref }}\n"
+            "  cancel-in-progress: true\n\n"
             "jobs:\n"
             "  build:\n"
             "    name: Build Signed Installable Android APK\n"
             "    runs-on: ubuntu-22.04\n"
+            "    timeout-minutes: 35\n"
             "    steps:\n"
-            "      - uses: actions/checkout@v4\n"
-            "      - uses: actions/setup-python@v5\n"
+            "      - uses: actions/checkout@v7\n"
+            "      - uses: actions/setup-python@v7\n"
             "        with:\n"
             "          python-version: '3.10'\n"
-            "      - uses: actions/setup-java@v4\n"
+            "      - uses: actions/setup-java@v6\n"
             "        with:\n"
             "          distribution: 'temurin'\n"
             "          java-version: '17'\n"
@@ -2313,7 +2317,7 @@ class NeonProMobileSuite(BoxLayout):
             "          sudo apt-get update\n"
             "          sudo apt-get install -y build-essential git zip unzip patch ant lbzip2 xz-utils openjdk-17-jdk autoconf libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev automake ccache lld libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev\n"
             "      - name: Cache Buildozer\n"
-            "        uses: actions/cache@v4\n"
+            "        uses: actions/cache@v6\n"
             "        with:\n"
             "          path: |\n"
             "            .buildozer\n"
@@ -2326,9 +2330,9 @@ class NeonProMobileSuite(BoxLayout):
             "        run: |\n"
             "          python -m pip install --upgrade pip\n"
             '          pip install --upgrade "setuptools<66.0.0" wheel virtualenv cython==0.29.36 buildozer\n'
-            "          buildozer -v android debug\n"
+            "          yes | buildozer -v android debug\n"
             "      - name: Upload APK\n"
-            "        uses: actions/upload-artifact@v4\n"
+            "        uses: actions/upload-artifact@v7\n"
             "        with:\n"
             "          name: NeonMobile-Android-APK\n"
             "          path: bin/*.apk\n"
@@ -2336,20 +2340,33 @@ class NeonProMobileSuite(BoxLayout):
             "  build_exe:\n"
             "    name: Build Windows Standalone EXE\n"
             "    runs-on: windows-latest\n"
+            "    timeout-minutes: 25\n"
+            "    env:\n"
+            "      PIP_NO_INPUT: '1'\n"
+            "      PIP_DISABLE_PIP_VERSION_CHECK: '1'\n"
+            "      KIVY_NO_ARGS: '1'\n"
+            "      KIVY_NO_CONSOLELOG: '1'\n"
+            "      KIVY_NO_FILELOG: '1'\n"
+            "      PYTHONUNBUFFERED: '1'\n"
             "    steps:\n"
-            "      - uses: actions/checkout@v4\n"
-            "      - uses: actions/setup-python@v5\n"
+            "      - uses: actions/checkout@v7\n"
+            "      - name: Speed Up Windows Build\n"
+            "        shell: pwsh\n"
+            "        run: |\n"
+            '          try { Add-MpPreference -ExclusionPath $env:GITHUB_WORKSPACE, $env:LOCALAPPDATA, $env:TEMP -ErrorAction SilentlyContinue } catch {}\n'
+            "      - uses: actions/setup-python@v7\n"
             "        with:\n"
-            "          python-version: '3.10'\n"
+            "          python-version: '3.11'\n"
             "      - name: Install Windows Build Deps\n"
             "        run: |\n"
-            "          python -m pip install --upgrade pip\n"
-            "          pip install kivy requests certifi urllib3 pyinstaller\n"
+            '          python -m pip install --prefer-binary --no-input "kivy==2.3.2" requests certifi urllib3 pyinstaller\n'
+            '          python -c "import kivy, PyInstaller; print(kivy.__version__, PyInstaller.__version__)"\n'
+            "          pyinstaller --version\n"
             "      - name: Compile Windows EXE\n"
             "        run: |\n"
-            '          pyinstaller --noconsole --onefile --clean --name "NeonMobile_Windows" main.py\n'
+            '          pyinstaller --noconfirm --noconsole --onefile --noupx --log-level=INFO --exclude-module tkinter --exclude-module unittest --exclude-module test --exclude-module pydoc --name "NeonMobile_Windows" main.py\n'
             "      - name: Upload Windows EXE\n"
-            "        uses: actions/upload-artifact@v4\n"
+            "        uses: actions/upload-artifact@v7\n"
             "        with:\n"
             "          name: NeonMobile-Windows-EXE\n"
             "          path: dist/*.exe\n"
@@ -2375,7 +2392,7 @@ class NeonProMobileSuite(BoxLayout):
                 "android.minapi = 21\n"
                 "android.ndk = 25b\n"
                 "android.ndk_api = 21\n"
-                "android.archs = arm64-v8a, armeabi-v7a\n"
+                "android.archs = arm64-v8a\n"
                 "android.accept_sdk_license = True\n"
                 "android.allow_backup = True\n"
                 "p4a.branch = v2024.01.21\n\n"
@@ -3149,7 +3166,7 @@ class NeonProMobileSuite(BoxLayout):
         style_card(card, (0.04, 0.055, 0.115, 1.0), (0.55, 0.30, 0.85, 0.55), radius_dp=12)
         card.add_widget(
             AutoLabel(
-                text="[b][color=c084fc]Dual Cloud Builder (APK & EXE)[/color][/b] [color=94a3b8]• Token Once, Build Forever[/color]",
+                text="[b][color=c084fc]GitHub CI • Cloud Builder (APK & EXE)[/color][/b] [color=94a3b8]• Token Once, Build Forever[/color]",
                 font_size=sp(12),
             )
         )
@@ -3241,7 +3258,7 @@ class NeonProMobileSuite(BoxLayout):
         dl_btn_row.add_widget(self.gh_exe_btn)
         card.add_widget(dl_btn_row)
 
-        util_row = BoxLayout(size_hint_y=None, height=dp(34), spacing=dp(6))
+        util_row = BoxLayout(size_hint_y=None, height=dp(34), spacing=dp(5))
         self.gh_runs_btn = make_button(
             "Check Status",
             (0.28, 0.16, 0.58, 1.0),
@@ -3252,8 +3269,20 @@ class NeonProMobileSuite(BoxLayout):
         self.gh_runs_btn.bind(on_release=lambda *_: self._gh_check_runs())
         util_row.add_widget(self.gh_runs_btn)
 
+        self.gh_cancel_btn = make_button(
+            "Cancel Stuck",
+            (0.32, 0.08, 0.12, 1.0),
+            (0.92, 0.30, 0.38, 0.72),
+            radius_dp=8,
+            font_sp=10,
+            size_hint_x=None,
+            width=dp(88),
+        )
+        self.gh_cancel_btn.bind(on_release=lambda *_: self._gh_cancel_stuck_runs())
+        util_row.add_widget(self.gh_cancel_btn)
+
         self.gh_open_btn = make_button(
-            "Open CI Downloads",
+            "GitHub Web",
             (0.08, 0.22, 0.42, 1.0),
             (0.25, 0.62, 0.96, 0.7),
             radius_dp=8,
@@ -3261,6 +3290,16 @@ class NeonProMobileSuite(BoxLayout):
         )
         self.gh_open_btn.bind(on_release=lambda *_: self._gh_open_actions_browser())
         util_row.add_widget(self.gh_open_btn)
+
+        self.gh_browser_ci_btn = make_button(
+            "Browser CI",
+            (0.32, 0.14, 0.56, 1.0),
+            (0.75, 0.45, 0.98, 0.8),
+            radius_dp=8,
+            font_sp=10,
+        )
+        self.gh_browser_ci_btn.bind(on_release=lambda *_: self._gh_open_web_ci())
+        util_row.add_widget(self.gh_browser_ci_btn)
         card.add_widget(util_row)
         root.add_widget(card)
 
@@ -3484,6 +3523,9 @@ class NeonProMobileSuite(BoxLayout):
         else:
             self._open_github_token_modal()
 
+    def _gh_open_web_ci(self):
+        webbrowser.open("https://ais-pre-ccf5jvawenmhsjix56rckx-803295381828.asia-southeast1.run.app/?tab=github")
+
     def _gh_open_actions_browser(self):
         repo = self.gh_repo_input.text.strip() or self.github_repo or "neon-pro-harish"
         owner = getattr(self, "_gh_owner_cache", "")
@@ -3495,9 +3537,9 @@ class NeonProMobileSuite(BoxLayout):
                 self._gh_owner_cache = user["login"]
                 webbrowser.open(f"https://github.com/{self._gh_owner_cache}/{repo}/actions")
                 return
-            webbrowser.open("https://github.com")
+            webbrowser.open("https://github.com/login")
         else:
-            webbrowser.open("https://github.com")
+            webbrowser.open("https://github.com/login")
 
     def _gh_headers(self, token):
         return {
@@ -3530,30 +3572,65 @@ class NeonProMobileSuite(BoxLayout):
         except Exception:
             return code, {"message": txt}
 
-    def _gh_put(self, url, token, body):
+    def _gh_req(self, method, url, token, body=None):
         hdrs = self._gh_headers(token)
         _ssl_ctx, req_verify = _build_ssl_context()
         if requests is not None:
             try:
                 try:
-                    r = requests.put(url, json=body, headers=hdrs, timeout=20, verify=req_verify)
+                    r = requests.request(method, url, json=body, headers=hdrs, timeout=22, verify=req_verify)
                 except Exception as r_err:
                     if _is_ssl_exception(r_err) and req_verify is not False:
                         _activate_unverified_ssl_fallback()
-                        r = requests.put(url, json=body, headers=hdrs, timeout=20, verify=False)
+                        r = requests.request(method, url, json=body, headers=hdrs, timeout=22, verify=False)
                     else:
                         raise
                 return r.status_code, (r.json() if r.content else {})
             except Exception:
                 pass
-        req = urllib.request.Request(
-            url, data=json.dumps(body).encode("utf-8"), headers=hdrs, method="PUT"
-        )
-        code, txt = _urlopen_with_ssl_retry(req, timeout=20)
+        data_bytes = json.dumps(body).encode("utf-8") if body is not None else None
+        req = urllib.request.Request(url, data=data_bytes, headers=hdrs, method=method)
+        code, txt = _urlopen_with_ssl_retry(req, timeout=22)
         try:
-            return code, json.loads(txt)
+            return code, (json.loads(txt) if txt else {})
         except Exception:
             return code, {"message": txt}
+
+    def _gh_put(self, url, token, body):
+        return self._gh_req("PUT", url, token, body=body)
+
+    def _gh_cancel_stuck_runs(self):
+        token = self.gh_token_input.text.strip() or self.github_token
+        repo = self.gh_repo_input.text.strip() or "neon-pro-harish"
+        if not token:
+            self.gh_log.text = "[color=fbbf24]Pehle 'Get Token' dabakar GitHub Token save karein.[/color]"
+            return
+        self.gh_log.text = "[color=fbbf24]Cancelling stuck in_progress builds...[/color]"
+
+        def _worker():
+            code, user = self._gh_get("https://api.github.com/user", token)
+            if code != 200:
+                Clock.schedule_once(lambda _dt: setattr(self.gh_log, "text", f"[color=f87171]Auth Error ({code})[/color]"), 0)
+                return
+            owner = user.get("login", "")
+            self._gh_owner_cache = owner
+            rc, runs_data = self._gh_get(f"https://api.github.com/repos/{owner}/{repo}/actions/runs?per_page=8", token)
+            cancelled = []
+            if rc == 200 and isinstance(runs_data, dict):
+                for r in runs_data.get("workflow_runs", []):
+                    if r.get("status") in ("in_progress", "queued", "waiting"):
+                        rid = r.get("id")
+                        cc, _ = self._gh_req("POST", f"https://api.github.com/repos/{owner}/{repo}/actions/runs/{rid}/cancel", token)
+                        if cc not in (200, 202):
+                            cc, _ = self._gh_req("POST", f"https://api.github.com/repos/{owner}/{repo}/actions/runs/{rid}/force-cancel", token)
+                        cancelled.append(f"#{rid} ({cc})")
+            if cancelled:
+                msg = f"[color=34d399][b]✓ Cancelled {len(cancelled)} stuck build(s):[/b] {', '.join(cancelled)}[/color]\n[color=cbd5e1]Ab ek baar 'Download APK File' dabao taaki fresh clean build start ho![/color]"
+            else:
+                msg = "[color=38bdf8]Koi in_progress build nahi mila — ab naya build start kar sakte ho.[/color]"
+            Clock.schedule_once(lambda _dt: setattr(self.gh_log, "text", msg), 0)
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _gh_check_runs(self):
         token = self.gh_token_input.text.strip() or self.github_token
@@ -3575,7 +3652,7 @@ class NeonProMobileSuite(BoxLayout):
             owner = user.get("login", "")
             self._gh_owner_cache = owner
             rc, runs_data = self._gh_get(
-                f"https://api.github.com/repos/{owner}/{repo}/actions/runs?per_page=5",
+                f"https://api.github.com/repos/{owner}/{repo}/actions/runs?per_page=6",
                 token,
             )
             if rc != 200:
@@ -3583,23 +3660,43 @@ class NeonProMobileSuite(BoxLayout):
                 Clock.schedule_once(lambda _dt: setattr(self.gh_log, "text", msg), 0)
                 return
             lines = [f"[b][color=34d399]Repo: {owner}/{repo}[/color][/b]"]
-            for r in runs_data.get("workflow_runs", [])[:5]:
+            runs_list = runs_data.get("workflow_runs", [])[:5]
+            for idx, r in enumerate(runs_list):
                 st = r.get("conclusion") or r.get("status")
                 clr = "34d399" if st == "success" else ("f87171" if st == "failure" else "38bdf8")
                 lines.append(f"[color={clr}]• {escape_markup(r.get('name', 'APK + EXE Build'))}: {st}[/color]")
+                if idx == 0 or r.get("status") in ("in_progress", "queued"):
+                    jc, jdata = self._gh_get(
+                        f"https://api.github.com/repos/{owner}/{repo}/actions/runs/{r.get('id')}/jobs",
+                        token,
+                    )
+                    if jc == 200 and isinstance(jdata, dict):
+                        for jb in jdata.get("jobs", []):
+                            jst = jb.get("conclusion") or jb.get("status")
+                            jclr = "34d399" if jst == "success" else ("f87171" if jst == "failure" else "22d3ee")
+                            cur_step = ""
+                            for sp_item in jb.get("steps", []):
+                                if sp_item.get("status") == "in_progress":
+                                    cur_step = f" -> {sp_item.get('name', '')}"
+                                    break
+                            lines.append(
+                                f"  [color={jclr}]- {escape_markup(jb.get('name', 'Job'))}: {jst}{escape_markup(cur_step)}[/color]"
+                            )
 
             ac, art_data = self._gh_get(
-                f"https://api.github.com/repos/{owner}/{repo}/actions/artifacts?per_page=4",
+                f"https://api.github.com/repos/{owner}/{repo}/actions/artifacts?per_page=10",
                 token,
             )
             if ac == 200 and isinstance(art_data, dict):
-                arts = art_data.get("artifacts", [])
+                arts = [a for a in art_data.get("artifacts", []) if not a.get("expired")]
                 if arts:
                     lines.append("\n[b][color=22d3ee]Ready Downloads (APK & EXE):[/color][/b]")
-                    for a in arts[:4]:
+                    for a in arts[:6]:
                         mb = round((a.get("size_in_bytes", 0) or 0) / (1024 * 1024), 1)
                         lines.append(f"[color=34d399]✓ {escape_markup(a.get('name', 'Artifact'))} ({mb} MB)[/color]")
-            lines.append(f"\n[color=94a3b8]Tap 'Open CI Downloads' to download .apk & .exe:\nhttps://github.com/{owner}/{repo}/actions[/color]")
+                else:
+                    lines.append("\n[color=fbbf24]Abhi tak koi compiled file ready nahi hai — agar build 25+ min se atka hai toh 'Cancel Stuck' dabakar naya push karein.[/color]")
+            lines.append(f"\n[color=94a3b8]Tap 'Open Downloads' to download .apk & .exe:\nhttps://github.com/{owner}/{repo}/actions[/color]")
             final_txt = "\n".join(lines)
             Clock.schedule_once(lambda _dt: setattr(self.gh_log, "text", final_txt), 0)
 
@@ -3620,7 +3717,7 @@ class NeonProMobileSuite(BoxLayout):
         if hasattr(self, "gh_exe_btn"):
             self.gh_exe_btn.disabled = True
         label_mode = "Windows .EXE + Android .APK" if target == "exe" else "Android .APK + Windows .EXE"
-        self.gh_log.text = f"[color=38bdf8]Building {label_mode} via GitHub Cloud CI...[/color]"
+        self.gh_log.text = f"[color=38bdf8]Pushing in 1 atomic commit & starting {label_mode} build...[/color]"
         files_bundle = dict(self.studio_files)
 
         def _worker():
@@ -3638,10 +3735,11 @@ class NeonProMobileSuite(BoxLayout):
             self._gh_owner_cache = owner
             r_code, repo_info = self._gh_get(f"https://api.github.com/repos/{owner}/{repo}", token)
             if r_code == 404:
-                self._http_post_json(
+                self._gh_req(
+                    "POST",
                     "https://api.github.com/user/repos",
-                    {"name": repo, "auto_init": True},
-                    headers=self._gh_headers(token),
+                    token,
+                    body={"name": repo, "auto_init": True},
                 )
                 time.sleep(1.8)
                 r_code, repo_info = self._gh_get(f"https://api.github.com/repos/{owner}/{repo}", token)
@@ -3655,33 +3753,103 @@ class NeonProMobileSuite(BoxLayout):
             ]
             pushed_ok = []
             errors = []
-            for target_path in push_order:
-                content_str = files_bundle.get(target_path, "")
-                if not content_str:
-                    continue
-                f_url = f"https://api.github.com/repos/{owner}/{repo}/contents/{target_path}"
-                ex_code, ex_data = self._gh_get(f"{f_url}?ref={branch}", token)
-                put_body = {
-                    "message": f"[NEON PRO v4.5] Update {target_path}",
-                    "content": base64.b64encode(content_str.encode("utf-8")).decode("ascii"),
-                    "branch": branch,
-                }
-                if ex_code == 200 and isinstance(ex_data, dict) and ex_data.get("sha"):
-                    put_body["sha"] = ex_data["sha"]
-                p_code, p_res = self._gh_put(f_url, token, put_body)
-                if p_code in (200, 201):
-                    pushed_ok.append(target_path)
-                else:
-                    err_m = p_res.get("message", str(p_res)) if isinstance(p_res, dict) else str(p_res)
-                    errors.append(f"{target_path}: {p_code} {err_m}")
+            atomic_done = False
+
+            # Atomic 1-commit push via Git Trees API so GitHub triggers ONLY 1 clean workflow run
+            try:
+                rc, ref_data = self._gh_get(
+                    f"https://api.github.com/repos/{owner}/{repo}/git/ref/heads/{branch}",
+                    token,
+                )
+                head_sha = ref_data.get("object", {}).get("sha") if rc == 200 and isinstance(ref_data, dict) else None
+                if head_sha:
+                    cc, c_data = self._gh_get(
+                        f"https://api.github.com/repos/{owner}/{repo}/git/commits/{head_sha}",
+                        token,
+                    )
+                    base_tree = c_data.get("tree", {}).get("sha") if cc == 200 and isinstance(c_data, dict) else None
+                    if base_tree:
+                        tree_entries = []
+                        for target_path in push_order:
+                            content_str = files_bundle.get(target_path, "")
+                            if not content_str:
+                                continue
+                            bc, b_res = self._gh_req(
+                                "POST",
+                                f"https://api.github.com/repos/{owner}/{repo}/git/blobs",
+                                token,
+                                body={
+                                    "content": base64.b64encode(content_str.encode("utf-8")).decode("ascii"),
+                                    "encoding": "base64",
+                                },
+                            )
+                            if bc in (200, 201) and isinstance(b_res, dict) and b_res.get("sha"):
+                                tree_entries.append({
+                                    "path": target_path,
+                                    "mode": "100644",
+                                    "type": "blob",
+                                    "sha": b_res["sha"],
+                                })
+                                pushed_ok.append(target_path)
+                        if tree_entries:
+                            tc, t_res = self._gh_req(
+                                "POST",
+                                f"https://api.github.com/repos/{owner}/{repo}/git/trees",
+                                token,
+                                body={"base_tree": base_tree, "tree": tree_entries},
+                            )
+                            if tc in (200, 201) and isinstance(t_res, dict) and t_res.get("sha"):
+                                nc, nc_res = self._gh_req(
+                                    "POST",
+                                    f"https://api.github.com/repos/{owner}/{repo}/git/commits",
+                                    token,
+                                    body={
+                                        "message": "[NEON PRO v4.5] Atomic Dual APK + EXE Build",
+                                        "tree": t_res["sha"],
+                                        "parents": [head_sha],
+                                    },
+                                )
+                                if nc in (200, 201) and isinstance(nc_res, dict) and nc_res.get("sha"):
+                                    pc, _ = self._gh_req(
+                                        "PATCH",
+                                        f"https://api.github.com/repos/{owner}/{repo}/git/refs/heads/{branch}",
+                                        token,
+                                        body={"sha": nc_res["sha"]},
+                                    )
+                                    if pc in (200, 201):
+                                        atomic_done = True
+            except Exception:
+                atomic_done = False
+
+            if not atomic_done:
+                pushed_ok = []
+                for target_path in push_order:
+                    content_str = files_bundle.get(target_path, "")
+                    if not content_str:
+                        continue
+                    f_url = f"https://api.github.com/repos/{owner}/{repo}/contents/{target_path}"
+                    ex_code, ex_data = self._gh_get(f"{f_url}?ref={branch}", token)
+                    put_body = {
+                        "message": f"[NEON PRO v4.5] Update {target_path}",
+                        "content": base64.b64encode(content_str.encode("utf-8")).decode("ascii"),
+                        "branch": branch,
+                    }
+                    if ex_code == 200 and isinstance(ex_data, dict) and ex_data.get("sha"):
+                        put_body["sha"] = ex_data["sha"]
+                    p_code, p_res = self._gh_put(f_url, token, put_body)
+                    if p_code in (200, 201):
+                        pushed_ok.append(target_path)
+                    else:
+                        err_m = p_res.get("message", str(p_res)) if isinstance(p_res, dict) else str(p_res)
+                        errors.append(f"{target_path}: {p_code} {err_m}")
 
             if pushed_ok and not errors:
                 extra_exe = f"\n[color=38bdf8]Local Windows EXE Builder ZIP: {escape_markup(local_exe_zip)}[/color]" if local_exe_zip else ""
                 msg = (
-                    f"[color=34d399][b]✓ {label_mode} cloud build started![/b][/color]\n"
+                    f"[color=34d399][b]✓ Clean 1-commit {label_mode} build started![/b][/color]\n"
                     f"[color=cbd5e1]Pushed {', '.join(pushed_ok)}.\n"
-                    f"Artifacts ready in ~4 min: NeonMobile-Android-APK (.apk) & NeonMobile-Windows-EXE (.exe).\n"
-                    f"Tap 'Check Status' or 'Open CI Downloads':\n"
+                    f"Windows .EXE ready in ~2 min, Android .APK ready in ~10-14 min.\n"
+                    f"Tap 'Check Status' or 'Open Downloads':\n"
                     f"https://github.com/{owner}/{repo}/actions[/color]{extra_exe}"
                 )
             else:

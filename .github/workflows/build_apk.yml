@@ -100,7 +100,8 @@ jobs:
       - name: Install Windows Packaging Dependencies
         run: |
           python -m pip install --prefer-binary --no-input "kivy==2.3.2" requests certifi urllib3 pyinstaller
-          python -c "import kivy, pyinstaller; print('Kivy:', kivy.__version__, 'PyInstaller:', pyinstaller.__version__)"
+          python -c "import kivy, PyInstaller; print('Kivy:', kivy.__version__, 'PyInstaller:', PyInstaller.__version__)"
+          pyinstaller --version
 
       - name: Compile Standalone Windows EXE
         run: |
