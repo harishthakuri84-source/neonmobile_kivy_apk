@@ -1,12 +1,11 @@
 """
-NEON PRO v4.3 - Autonomous Android Mobile & Desktop Suite
+NEON PRO v4.4 - User-Friendly All-in-One Mobile AI & APK Builder
 Architected for: Harish
 Features:
-  - Complete Web Preview Parity (Console, App Studio, Debugger, Build Lab, GitHub CI)
-  - Voice-First Engine: Hands-Free loop, Barge-In, Personas, Gemini TTS (WAV) + UI-Thread Android TTS retry + auto-send STT
-  - Crash-proof Android startup & callback-safe RECORD_AUDIO permissions
-  - Dynamic Gemini REST API failover + /v1beta/models auto-discovery + Autonomous Code Sync
-  - On-Device Self-Test & Auto-Heal Diagnostics (SSL, API/Models, Storage, Mic/TTS, AST Syntax Repair)
+  - Zero Copy-Paste App Builder: Chat code, Templates & AI Build auto-sync straight to App Builder
+  - 1-Tap Build APK: Pushes all 4 files (main.py, buildozer.spec, requirements.txt, CI YML) to GitHub
+  - Voice-First Engine: Hands-Free loop, Barge-In, Personas, Gemini TTS (WAV) + Android TTS
+  - Crash-proof Android startup, SSL auto-fallback & On-Device Self-Test + Auto-Heal
 """
 import ast
 import base64
@@ -26,6 +25,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
+import zipfile
 
 try:
     import certifi
@@ -173,12 +173,15 @@ CONFIG_FILE = "neon_pro_config.json"
 WEB_COCKPIT_URL = "https://ais-pre-ccf5jvawenmhsjix56rckx-803295381828.asia-southeast1.run.app"
 DEFAULT_SYSTEM_PROMPT = (
     "You are NEON PRO, Harish's autonomous, bilingual (Hindi / English / Hinglish) "
-    "personal AI companion and voice assistant. "
-    "Core Behavioral Rules for Conversation: "
-    "1. Talk naturally, warmly, and directly like a close Indian peer or friend—just like a natural human conversation. Never sound robotic, stiff, or like a corporate customer service bot. "
+    "personal AI companion, voice assistant, and mobile app builder. "
+    "Core Behavioral Rules: "
+    "1. Talk naturally, warmly, and directly like a close Indian friend—clear, simple, and user-friendly. Never sound robotic or stiff. "
     "2. NEVER recite system status reports, battery levels, connection logs, or technical diagnostics unless explicitly requested. "
-    "3. Keep conversational responses concise, punchy, and context-aware. If Harish asks 'How are you?' or greets casually, reply like a normal friend (e.g., 'Ekdum mast bhai, batao kya plan hai?'), never stiff. "
-    "4. Eliminate filler text and unnecessary pleasantries. When Harish asks to build, architect, or develop an app/software/script, jump straight to clean, complete, zero-placeholder runnable Python/Kivy code inside triple-backtick code blocks."
+    "3. Keep conversational replies short and helpful. Match Hindi, English, or Hinglish effortlessly. "
+    "4. ZERO COPY-PASTE & NO PC/COLAB RULE: NEON PRO has a built-in All-in-One App Builder and 1-Tap 'Build APK' button right on Harish's phone. "
+    "NEVER tell Harish 'main chat pe APK nahi bhej sakta, PC ya Google Colab pe Buildozer chalao' and NEVER ask him to copy-paste code. "
+    "When Harish asks for any Android app or APK, output complete zero-placeholder Python/Kivy code inside one triple-backtick python block "
+    "(which auto-syncs into App Builder automatically) and tell him in one friendly line to tap 'Build APK'."
 )
 
 
@@ -809,7 +812,7 @@ class NeonProMobileSuite(BoxLayout):
 
         title_col = BoxLayout(orientation="vertical", spacing=dp(1))
         title_lbl = Label(
-            text="[b][color=ffffff]NEON[/color] [color=22d3ee]PRO[/color][/b] [color=64748b]v4.3[/color]",
+            text="[b][color=ffffff]NEON[/color] [color=22d3ee]PRO[/color][/b] [color=64748b]v4.4[/color]",
             markup=True,
             font_size=sp(15),
             halign="left",
@@ -914,11 +917,11 @@ class NeonProMobileSuite(BoxLayout):
         style_card(tab_bar, (0.045, 0.068, 0.125, 1.0), (0.12, 0.18, 0.30, 0.9), radius_dp=10)
 
         tabs = [
-            ("console", "Console"),
-            ("app-studio", "Studio"),
-            ("debugger", "Debug"),
-            ("terminal", "Lab"),
-            ("github", "GitHub CI"),
+            ("console", "Chat"),
+            ("app-studio", "App Builder"),
+            ("debugger", "Auto-Fix"),
+            ("terminal", "Device"),
+            ("github", "Get APK"),
         ]
         for key, label in tabs:
             btn = make_button(
@@ -1165,10 +1168,12 @@ class NeonProMobileSuite(BoxLayout):
         root.add_widget(self.chat_scroll)
 
         welcome_text = (
-            "Hey Harish! Kya haal hain bhai? Batao aaj kya plan hai—koi app ya APK banana hai, "
-            "koi error fix karein, ya bas normal baat-cheet?"
+            "Namaste Harish! Main NEON PRO hoon — sab kuch yahin ek jagah hai:\n"
+            "1. Bolo ya likho kaunsa app banana hai (e.g. 'Compound Interest Calculator banao').\n"
+            "2. Code bina copy-paste ke seedha App Builder me save ho jayega.\n"
+            "3. Seedha 'Build APK' dabao aur phone par installable .apk banao!"
         )
-        self._add_message_card("assistant", welcome_text, model_tag="NEON Core")
+        self._add_message_card("assistant", welcome_text, model_tag="NEON v4.4")
         if not self.api_key:
             self._add_setup_card()
 
@@ -1178,11 +1183,11 @@ class NeonProMobileSuite(BoxLayout):
         quick_row.bind(minimum_width=quick_row.setter("width"))
 
         quick_prompts = [
-            ("Self-Test & Heal", "__SELF_TEST__"),
-            ("Hinglish Chat", "Aur bhai kya haal hai? Aaj mobile app me kya naya add karein?"),
-            ("Build Calculator", "Build a complete runnable Python Kivy scientific calculator app for Android."),
-            ("Android Tips", "Kivy aur PyJNIus se Android features (camera, vibration, notifications) kaise add karein?"),
-            ("Windows .EXE", "PyQt6 desktop app aur PyInstaller Windows .exe banane ka clean template do."),
+            ("Self-Test", "__SELF_TEST__"),
+            ("Compound Calc", "Build a complete runnable Compound Interest Calculator Kivy Android app for Harish."),
+            ("App Templates", "__OPEN_BUILDER__"),
+            ("Hinglish Chat", "Aur bhai kya haal hai? Aaj naya app banayein kya?"),
+            ("Fix Error", "__OPEN_FIXER__"),
         ]
         for label, prompt in quick_prompts:
             pill = make_button(
@@ -1422,27 +1427,40 @@ class NeonProMobileSuite(BoxLayout):
                     c_hdr.add_widget(c_lbl)
 
                     c_studio = make_button(
-                        "Open Studio",
+                        "Edit Code",
                         (0.05, 0.18, 0.28, 1.0),
                         (0.10, 0.65, 0.85, 0.6),
                         text_rgba=(0.55, 0.90, 1.0, 1.0),
                         radius_dp=6,
                         font_sp=9,
                         size_hint=(None, None),
-                        size=(dp(76), dp(22)),
+                        size=(dp(66), dp(22)),
                     )
                     c_studio.bind(on_release=lambda *_a, cb=code_body, lg=lang: self._open_code_in_studio(cb, lg))
                     c_hdr.add_widget(c_studio)
 
+                    c_apk = make_button(
+                        "Build APK",
+                        (0.04, 0.45, 0.32, 1.0),
+                        (0.14, 0.88, 0.58, 0.8),
+                        text_rgba=(0.85, 1.0, 0.92, 1.0),
+                        radius_dp=6,
+                        font_sp=9,
+                        size_hint=(None, None),
+                        size=(dp(66), dp(22)),
+                    )
+                    c_apk.bind(on_release=lambda *_a, cb=code_body, lg=lang: self._build_code_as_apk(cb, lg))
+                    c_hdr.add_widget(c_apk)
+
                     c_copy = make_button(
-                        "Copy Code",
+                        "Copy",
                         (0.06, 0.16, 0.14, 1.0),
                         (0.10, 0.72, 0.52, 0.6),
                         text_rgba=(0.55, 0.96, 0.78, 1.0),
                         radius_dp=6,
                         font_sp=9,
                         size_hint=(None, None),
-                        size=(dp(68), dp(22)),
+                        size=(dp(44), dp(22)),
                     )
                     c_copy.bind(on_release=lambda *_a, cb=code_body, b=c_copy: self._copy_text(cb, b))
                     c_hdr.add_widget(c_copy)
@@ -1463,24 +1481,36 @@ class NeonProMobileSuite(BoxLayout):
 
             if extracted_code is not None:
                 self._sync_autonomous_code(extracted_code[1], extracted_code[0])
-                sync_banner = BoxLayout(size_hint_y=None, height=dp(30), spacing=dp(6))
+                sync_banner = BoxLayout(size_hint_y=None, height=dp(32), spacing=dp(5))
                 sync_banner.add_widget(
                     AutoLabel(
-                        text="[b][color=34d399]✓ Autonomous Code Synced to Studio[/color][/b]",
+                        text="[b][color=34d399]✓ Saved to App Builder (Zero Copy-Paste)[/color][/b]",
                         font_size=sp(10),
                     )
                 )
                 go_studio = make_button(
-                    "Open Studio",
-                    (0.04, 0.45, 0.35, 1.0),
-                    (0.12, 0.85, 0.60, 0.7),
+                    "Open Builder",
+                    (0.06, 0.22, 0.36, 1.0),
+                    (0.14, 0.72, 0.90, 0.7),
                     radius_dp=7,
                     font_sp=10,
                     size_hint=(None, None),
-                    size=(dp(84), dp(26)),
+                    size=(dp(82), dp(26)),
                 )
                 go_studio.bind(on_release=lambda *_: self._switch_tab("app-studio"))
                 sync_banner.add_widget(go_studio)
+
+                go_apk = make_button(
+                    "Build APK",
+                    (0.04, 0.48, 0.34, 1.0),
+                    (0.16, 0.90, 0.60, 0.85),
+                    radius_dp=7,
+                    font_sp=10,
+                    size_hint=(None, None),
+                    size=(dp(76), dp(26)),
+                )
+                go_apk.bind(on_release=lambda *_: self._trigger_one_tap_apk_build())
+                sync_banner.add_widget(go_apk)
                 card.add_widget(sync_banner)
 
             wrapper.add_widget(card)
@@ -1493,6 +1523,10 @@ class NeonProMobileSuite(BoxLayout):
         self._sync_autonomous_code(code_body, lang)
         self._switch_tab("app-studio")
 
+    def _build_code_as_apk(self, code_body, lang="python"):
+        self._sync_autonomous_code(code_body, lang)
+        self._trigger_one_tap_apk_build()
+
     def _sync_autonomous_code(self, code_body, lang="python"):
         ext = "py"
         low = (lang or "").lower()
@@ -1502,15 +1536,21 @@ class NeonProMobileSuite(BoxLayout):
             ext = "html"
         elif "sh" in low or "bash" in low:
             ext = "sh"
-        fname = f"generated_app.{ext}"
+        fname = "main.py" if ext == "py" else f"generated_app.{ext}"
         self.studio_files[fname] = code_body
-        self.studio_file_lbl.text = f"[b][color=34d399]File: {fname}[/color][/b]"
+        self.active_studio_file = fname
+        self.studio_file_lbl.text = f"[b][color=34d399]Active File: {fname} (Ready for APK)[/color][/b]"
         self.studio_editor.text = code_body
+        if hasattr(self, "studio_status_lbl"):
+            self.studio_status_lbl.text = "[color=34d399]✓ Code synced into main.py! Tap 'Build APK' anytime.[/color]"
         try:
             proj_dir = os.path.join(self._get_data_dir(), "autonomous_projects")
             os.makedirs(proj_dir, exist_ok=True)
             with open(os.path.join(proj_dir, fname), "w", encoding="utf-8") as fh:
                 fh.write(code_body)
+            if fname == "main.py":
+                with open(os.path.join(proj_dir, "generated_app.py"), "w", encoding="utf-8") as fh2:
+                    fh2.write(code_body)
         except Exception:
             pass
 
@@ -1561,9 +1601,24 @@ class NeonProMobileSuite(BoxLayout):
         )
         return any(k in low for k in keys)
 
+    def _extract_python_code(self, text_val):
+        m = re.search(r"```(?:python|py)?\s*\n([\s\S]*?)```", text_val, re.IGNORECASE)
+        if m and len(m.group(1).strip()) > 60:
+            return m.group(1).strip() + "\n"
+        if "from kivy" in text_val and "def build(" in text_val and len(text_val) > 120:
+            lines = [ln for ln in text_val.splitlines() if not ln.strip().startswith("```")]
+            return "\n".join(lines).strip() + "\n"
+        return None
+
     def _send_chat_prompt(self, preset_prompt=None):
         if preset_prompt == "__SELF_TEST__":
             self._run_self_test_and_heal(auto_fix=True)
+            return
+        if preset_prompt == "__OPEN_BUILDER__":
+            self._switch_tab("app-studio")
+            return
+        if preset_prompt == "__OPEN_FIXER__":
+            self._switch_tab("debugger")
             return
 
         prompt = (preset_prompt or self.chat_input.text).strip()
@@ -1574,6 +1629,24 @@ class NeonProMobileSuite(BoxLayout):
         if not preset_prompt:
             self.chat_input.text = ""
         self._add_message_card("user", prompt)
+
+        # Auto-detect pasted Python/Kivy code in Chat and sync cleanly with zero copy-paste!
+        pasted_py = self._extract_python_code(prompt)
+        if pasted_py:
+            self._sync_autonomous_code(pasted_py, "python")
+            try:
+                ast.parse(pasted_py)
+                ast_note = "Syntax bilkul OK hai!"
+            except SyntaxError as s_err:
+                ast_note = f"Line {s_err.lineno} par ek chhota syntax issue hai — 'App Builder -> Check Code' dabao."
+            ok_reply = (
+                f"Badhiya Harish! Maine aapka app code seedha App Builder (main.py) me save kar diya hai — copy-paste ki zaroorat nahi! {ast_note}\n\n"
+                f"```python\n{pasted_py.strip()}\n```"
+            )
+            self._add_message_card("assistant", ok_reply, model_tag="Auto-Sync")
+            if self.audio_enabled:
+                self.voice_bridge.speak("Harish, aapka code App Builder me save ho gaya hai. Build APK dabao.")
+            return
 
         if self._is_self_test_intent(prompt):
             self._run_self_test_and_heal(auto_fix=True, user_already_added=True)
@@ -1983,25 +2056,86 @@ class NeonProMobileSuite(BoxLayout):
         threading.Thread(target=_worker, daemon=True).start()
 
     # ------------------------------------------------------------------
-    # TAB 2: APP STUDIO
+    # TAB 2: ALL-IN-ONE APP BUILDER (Zero Copy-Paste, Templates, 1-Tap Build APK)
     # ------------------------------------------------------------------
     def _build_studio_tab(self):
-        root = BoxLayout(orientation="vertical", spacing=dp(8))
+        root = BoxLayout(orientation="vertical", spacing=dp(6))
 
-        banner = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(82), padding=dp(9), spacing=dp(5))
-        style_card(banner, (0.04, 0.06, 0.12, 1.0), (0.06, 0.45, 0.62, 0.5), radius_dp=12)
-        banner.add_widget(
-            AutoLabel(
-                text="[b][color=22d3ee]NEON App Studio[/color][/b] [color=94a3b8]• Autonomous Mobile & PC Code[/color]",
-                font_size=sp(12),
-            )
+        default_ci_workflow = (
+            "name: NEON PRO - Auto Build Android APK\n"
+            "on:\n"
+            "  push:\n"
+            "    branches: [ main, master ]\n"
+            "  workflow_dispatch:\n\n"
+            "jobs:\n"
+            "  build:\n"
+            "    name: Build Signed Installable Android APK\n"
+            "    runs-on: ubuntu-22.04\n"
+            "    steps:\n"
+            "      - uses: actions/checkout@v4\n"
+            "      - uses: actions/setup-python@v5\n"
+            "        with:\n"
+            "          python-version: '3.10'\n"
+            "      - uses: actions/setup-java@v4\n"
+            "        with:\n"
+            "          distribution: 'temurin'\n"
+            "          java-version: '17'\n"
+            "      - name: Install Buildozer Deps\n"
+            "        run: |\n"
+            "          sudo apt-get update\n"
+            "          sudo apt-get install -y build-essential git zip unzip patch ant lbzip2 xz-utils openjdk-17-jdk autoconf libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev automake ccache lld libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev\n"
+            "      - name: Cache Buildozer\n"
+            "        uses: actions/cache@v4\n"
+            "        with:\n"
+            "          path: |\n"
+            "            .buildozer\n"
+            "            ~/.buildozer\n"
+            "            ~/.gradle/caches\n"
+            "          key: ubuntu22-v4-buildozer-${{ hashFiles('buildozer.spec') }}\n"
+            "          restore-keys: |\n"
+            "            ubuntu22-v4-buildozer-\n"
+            "      - name: Build APK\n"
+            "        run: |\n"
+            "          python -m pip install --upgrade pip\n"
+            '          pip install --upgrade "setuptools<66.0.0" wheel virtualenv cython==0.29.36 buildozer\n'
+            "          buildozer -v android debug\n"
+            "      - name: Upload APK\n"
+            "        uses: actions/upload-artifact@v4\n"
+            "        with:\n"
+            "          name: NeonMobile-Android-APK\n"
+            "          path: bin/*.apk\n"
+            "          if-no-files-found: error\n"
         )
 
-        preset_row = BoxLayout(size_hint_y=None, height=dp(34), spacing=dp(6))
+        self.active_studio_file = "main.py"
         self.studio_files = {
-            "main.py": "# NEON PRO v4.3 Mobile Core\nprint('NEON PRO Running on Android!')\n",
-            "buildozer.spec": "[app]\ntitle = NEON PRO Mobile\npackage.name = neonpromobile\nandroid.api = 33\nandroid.minapi = 21\nandroid.ndk = 25b\nandroid.ndk_api = 21\np4a.branch = v2024.01.21\n",
-            "requirements.txt": "kivy==2.3.0\nrequests==2.31.0\ncertifi==2024.2.2\nurllib3==2.2.1\n",
+            "main.py": "# NEON PRO v4.4 Mobile Core\nprint('NEON PRO Running on Android!')\n",
+            "buildozer.spec": (
+                "[app]\n"
+                "title = NEON PRO App\n"
+                "package.name = neonproapp\n"
+                "package.domain = org.harish.neon\n"
+                "source.dir = .\n"
+                "source.include_exts = py,png,jpg,kv,atlas,json\n"
+                "version = 0.3\n"
+                "requirements = python3,kivy==2.3.0,openssl,requests==2.31.0,urllib3==2.2.1,certifi==2024.2.2,charset-normalizer==3.3.2,idna==3.6,pyjnius,android\n"
+                "orientation = portrait\n"
+                "fullscreen = 0\n"
+                "android.permissions = INTERNET,ACCESS_NETWORK_STATE,RECORD_AUDIO,WAKE_LOCK\n"
+                "android.api = 33\n"
+                "android.minapi = 21\n"
+                "android.ndk = 25b\n"
+                "android.ndk_api = 21\n"
+                "android.archs = arm64-v8a, armeabi-v7a\n"
+                "android.accept_sdk_license = True\n"
+                "android.allow_backup = True\n"
+                "p4a.branch = v2024.01.21\n\n"
+                "[buildozer]\n"
+                "log_level = 2\n"
+                "warn_on_root = 1\n"
+            ),
+            "requirements.txt": "kivy>=2.3.0\ncertifi>=2024.2.2\nrequests>=2.31.0\nurllib3>=2.0.0\n",
+            ".github/workflows/build_apk.yml": default_ci_workflow,
         }
         try:
             if __file__.endswith(".py") and os.path.exists(__file__):
@@ -2009,14 +2143,51 @@ class NeonProMobileSuite(BoxLayout):
                     self.studio_files["main.py"] = self_fh.read()
         except Exception:
             pass
+        self._neon_core_source = self.studio_files["main.py"]
 
-        for fname in ("main.py", "buildozer.spec", "requirements.txt"):
+        banner = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(106), padding=dp(8), spacing=dp(5))
+        style_card(banner, (0.04, 0.06, 0.12, 1.0), (0.06, 0.45, 0.62, 0.55), radius_dp=12)
+        banner.add_widget(
+            AutoLabel(
+                text="[b][color=22d3ee]All-in-One App Builder[/color][/b] [color=94a3b8]• Tap a Template or Describe App[/color]",
+                font_size=sp(11),
+            )
+        )
+
+        # 1-Tap Quick App Templates Row
+        tpl_row = BoxLayout(size_hint_y=None, height=dp(30), spacing=dp(4))
+        for tlabel, tkey in (
+            ("Compound Calc", "ci"),
+            ("Sci Calc", "calc"),
+            ("Todo App", "todo"),
+            ("NEON Core", "neon"),
+        ):
+            tb = make_button(
+                tlabel,
+                (0.05, 0.19, 0.28, 1.0),
+                (0.10, 0.72, 0.88, 0.65),
+                text_rgba=(0.72, 0.96, 1.0, 1.0),
+                radius_dp=7,
+                font_sp=10,
+            )
+            tb.bind(on_release=lambda _i, k=tkey: self._studio_load_template(k))
+            tpl_row.add_widget(tb)
+        banner.add_widget(tpl_row)
+
+        # 4 Build Files Switcher Row
+        preset_row = BoxLayout(size_hint_y=None, height=dp(30), spacing=dp(4))
+        for flabel, fname in (
+            ("App Code", "main.py"),
+            ("APK Config", "buildozer.spec"),
+            ("Packages", "requirements.txt"),
+            ("Cloud YML", ".github/workflows/build_apk.yml"),
+        ):
             b = make_button(
-                fname,
-                (0.06, 0.12, 0.22, 1.0),
-                (0.10, 0.65, 0.85, 0.5),
-                text_rgba=(0.65, 0.92, 1.0, 1.0),
-                radius_dp=8,
+                flabel,
+                (0.06, 0.11, 0.20, 1.0),
+                (0.18, 0.38, 0.62, 0.5),
+                text_rgba=(0.78, 0.88, 0.98, 1.0),
+                radius_dp=7,
                 font_sp=10,
             )
             b.bind(on_release=lambda _i, k=fname: self._load_studio_file(k))
@@ -2026,7 +2197,7 @@ class NeonProMobileSuite(BoxLayout):
 
         gen_row = BoxLayout(size_hint_y=None, height=dp(42), spacing=dp(6))
         self.studio_prompt = TextInput(
-            hint_text="Describe an app/script to autonomously build...",
+            hint_text="Write what app you want (e.g. Expense Tracker)...",
             multiline=False,
             background_color=(0.03, 0.045, 0.085, 1.0),
             foreground_color=(1, 1, 1, 1),
@@ -2034,26 +2205,74 @@ class NeonProMobileSuite(BoxLayout):
             font_size=sp(12),
             padding=[dp(10), dp(9), dp(10), dp(9)],
         )
+        self.studio_prompt.bind(on_text_validate=lambda *_: self._studio_ai_generate())
         gen_row.add_widget(self.studio_prompt)
         self.studio_gen_btn = make_button(
-            "AI Build",
+            "Create App",
             (0.32, 0.16, 0.62, 1.0),
-            (0.68, 0.45, 0.98, 0.7),
+            (0.68, 0.45, 0.98, 0.75),
             radius_dp=9,
             font_sp=11,
             size_hint_x=None,
-            width=dp(80),
+            width=dp(92),
         )
         self.studio_gen_btn.bind(on_release=lambda *_: self._studio_ai_generate())
         gen_row.add_widget(self.studio_gen_btn)
         root.add_widget(gen_row)
 
-        editor_card = BoxLayout(orientation="vertical", padding=dp(8), spacing=dp(6))
+        # User-Friendly 1-Tap Action Strip
+        act_row = BoxLayout(size_hint_y=None, height=dp(36), spacing=dp(5))
+        chk_btn = make_button(
+            "Check Code",
+            (0.06, 0.16, 0.28, 1.0),
+            (0.14, 0.68, 0.88, 0.65),
+            text_rgba=(0.65, 0.92, 1.0, 1.0),
+            radius_dp=8,
+            font_sp=10,
+        )
+        chk_btn.bind(on_release=lambda *_: self._studio_test_ast())
+        act_row.add_widget(chk_btn)
+
+        zip_btn = make_button(
+            "Save ZIP",
+            (0.10, 0.15, 0.30, 1.0),
+            (0.32, 0.52, 0.92, 0.65),
+            text_rgba=(0.75, 0.88, 1.0, 1.0),
+            radius_dp=8,
+            font_sp=10,
+        )
+        zip_btn.bind(on_release=lambda *_: self._studio_export_zip())
+        act_row.add_widget(zip_btn)
+
+        fix_btn = make_button(
+            "Fix Error",
+            (0.24, 0.10, 0.36, 1.0),
+            (0.68, 0.36, 0.92, 0.65),
+            text_rgba=(0.90, 0.76, 1.0, 1.0),
+            radius_dp=8,
+            font_sp=10,
+        )
+        fix_btn.bind(on_release=lambda *_: self._send_code_to_debugger())
+        act_row.add_widget(fix_btn)
+
+        self.studio_apk_btn = make_button(
+            "Build APK",
+            (0.04, 0.52, 0.38, 1.0),
+            (0.16, 0.92, 0.62, 0.88),
+            text_rgba=(1.0, 1.0, 1.0, 1.0),
+            radius_dp=8,
+            font_sp=11,
+        )
+        self.studio_apk_btn.bind(on_release=lambda *_: self._trigger_one_tap_apk_build())
+        act_row.add_widget(self.studio_apk_btn)
+        root.add_widget(act_row)
+
+        editor_card = BoxLayout(orientation="vertical", padding=dp(8), spacing=dp(5))
         style_card(editor_card, (0.025, 0.035, 0.068, 1.0), (0.08, 0.25, 0.38, 0.6), radius_dp=12)
 
-        ed_hdr = BoxLayout(size_hint_y=None, height=dp(28), spacing=dp(5))
+        ed_hdr = BoxLayout(size_hint_y=None, height=dp(26), spacing=dp(5))
         self.studio_file_lbl = Label(
-            text="[b][color=34d399]File: main.py[/color][/b]",
+            text="[b][color=34d399]Active File: main.py[/color][/b]",
             markup=True,
             font_size=sp(11),
             halign="left",
@@ -2063,31 +2282,24 @@ class NeonProMobileSuite(BoxLayout):
         ed_hdr.add_widget(self.studio_file_lbl)
 
         copy_ed_btn = make_button(
-            "Copy Code",
+            "Copy",
             (0.06, 0.18, 0.16, 1.0),
             (0.10, 0.72, 0.52, 0.6),
             text_rgba=(0.55, 0.96, 0.78, 1.0),
             radius_dp=7,
             font_sp=10,
             size_hint=(None, None),
-            size=(dp(76), dp(26)),
+            size=(dp(56), dp(24)),
         )
         copy_ed_btn.bind(on_release=lambda *_: self._copy_text(self.studio_editor.text, copy_ed_btn))
         ed_hdr.add_widget(copy_ed_btn)
-
-        debug_ed_btn = make_button(
-            "Send Debug",
-            (0.22, 0.10, 0.35, 1.0),
-            (0.65, 0.35, 0.90, 0.6),
-            text_rgba=(0.88, 0.72, 1.0, 1.0),
-            radius_dp=7,
-            font_sp=10,
-            size_hint=(None, None),
-            size=(dp(80), dp(26)),
-        )
-        debug_ed_btn.bind(on_release=lambda *_: self._send_code_to_debugger())
-        ed_hdr.add_widget(debug_ed_btn)
         editor_card.add_widget(ed_hdr)
+
+        self.studio_status_lbl = AutoLabel(
+            text="[color=94a3b8]Ready: Pick a template above or type any app idea, then tap Build APK.[/color]",
+            font_size=sp(10),
+        )
+        editor_card.add_widget(self.studio_status_lbl)
 
         self.studio_editor = TextInput(
             text=self.studio_files["main.py"],
@@ -2102,23 +2314,231 @@ class NeonProMobileSuite(BoxLayout):
         root.add_widget(editor_card)
         return root
 
+    def _save_active_studio_buffer(self):
+        if hasattr(self, "studio_editor") and hasattr(self, "active_studio_file"):
+            self.studio_files[self.active_studio_file] = self.studio_editor.text
+
     def _load_studio_file(self, fname):
-        self.studio_file_lbl.text = f"[b][color=34d399]File: {fname}[/color][/b]"
+        self._save_active_studio_buffer()
+        self.active_studio_file = fname
+        self.studio_file_lbl.text = f"[b][color=34d399]Active File: {fname}[/color][/b]"
         self.studio_editor.text = self.studio_files.get(fname, "")
 
+    def _studio_load_template(self, tpl_key):
+        if tpl_key == "ci":
+            code = (
+                "from kivy.app import App\n"
+                "from kivy.uix.boxlayout import BoxLayout\n"
+                "from kivy.uix.label import Label\n"
+                "from kivy.uix.textinput import TextInput\n"
+                "from kivy.uix.button import Button\n"
+                "from kivy.uix.spinner import Spinner\n"
+                "from kivy.core.window import Window\n"
+                "from kivy.metrics import dp, sp\n\n"
+                "Window.clearcolor = (0.08, 0.09, 0.12, 1)\n\n"
+                "class CompoundInterestApp(App):\n"
+                "    def build(self):\n"
+                "        self.title = 'Compound Interest Calculator'\n"
+                "        root = BoxLayout(orientation='vertical', padding=dp(20), spacing=dp(12))\n"
+                "        root.add_widget(Label(text='Compound Interest Calculator', font_size=sp(22), bold=True, color=(0.25, 0.78, 0.98, 1), size_hint_y=None, height=dp(44)))\n"
+                "        self.principal_input = self._add_field(root, 'Principal Amount (Rs.)', 'e.g. 10000')\n"
+                "        self.rate_input = self._add_field(root, 'Annual Interest Rate (%)', 'e.g. 8.5')\n"
+                "        self.time_input = self._add_field(root, 'Time Period (Years)', 'e.g. 5')\n"
+                "        self.freq_map = {'Yearly (1x)': 1, 'Half-Yearly (2x)': 2, 'Quarterly (4x)': 4, 'Monthly (12x)': 12}\n"
+                "        self.freq_spinner = Spinner(text='Yearly (1x)', values=list(self.freq_map.keys()), size_hint_y=None, height=dp(46), background_color=(0.18, 0.22, 0.30, 1), color=(1, 1, 1, 1), font_size=sp(15))\n"
+                "        root.add_widget(self.freq_spinner)\n"
+                "        row = BoxLayout(orientation='horizontal', spacing=dp(10), size_hint_y=None, height=dp(48))\n"
+                "        calc_btn = Button(text='Calculate', font_size=sp(16), bold=True, background_normal='', background_color=(0.14, 0.62, 0.88, 1))\n"
+                "        calc_btn.bind(on_press=self.calculate_ci)\n"
+                "        clr_btn = Button(text='Clear', font_size=sp(15), background_normal='', background_color=(0.28, 0.30, 0.36, 1), size_hint_x=0.45)\n"
+                "        clr_btn.bind(on_press=self.clear_fields)\n"
+                "        row.add_widget(calc_btn)\n"
+                "        row.add_widget(clr_btn)\n"
+                "        root.add_widget(row)\n"
+                "        self.result_label = Label(text='Enter values and tap Calculate', font_size=sp(16), color=(0.9, 0.93, 0.96, 1), halign='center', valign='middle')\n"
+                "        self.result_label.bind(size=self.result_label.setter('text_size'))\n"
+                "        root.add_widget(self.result_label)\n"
+                "        return root\n\n"
+                "    def _add_field(self, parent, label_text, hint_text):\n"
+                "        lbl = Label(text=label_text, font_size=sp(14), color=(0.8, 0.85, 0.9, 1), size_hint_y=None, height=dp(24), halign='left')\n"
+                "        lbl.bind(size=lbl.setter('text_size'))\n"
+                "        parent.add_widget(lbl)\n"
+                "        inp = TextInput(hint_text=hint_text, multiline=False, input_filter='float', font_size=sp(16), size_hint_y=None, height=dp(46), padding=[dp(12), dp(12), dp(12), dp(12)], background_color=(0.15, 0.17, 0.23, 1), foreground_color=(1, 1, 1, 1))\n"
+                "        parent.add_widget(inp)\n"
+                "        return inp\n\n"
+                "    def calculate_ci(self, _instance):\n"
+                "        try:\n"
+                "            p = float(self.principal_input.text.strip())\n"
+                "            r = float(self.rate_input.text.strip()) / 100.0\n"
+                "            t = float(self.time_input.text.strip())\n"
+                "            n = self.freq_map[self.freq_spinner.text]\n"
+                "            if p <= 0 or r < 0 or t <= 0:\n"
+                "                self.result_label.color = (1, 0.45, 0.45, 1)\n"
+                "                self.result_label.text = 'Enter positive Principal and Time.'\n"
+                "                return\n"
+                "            amt = p * ((1 + r / n) ** (n * t))\n"
+                "            ci = amt - p\n"
+                "            self.result_label.color = (0.35, 0.95, 0.65, 1)\n"
+                "            self.result_label.text = f'Total Amount: Rs. {amt:,.2f}\\nCompound Interest: Rs. {ci:,.2f}'\n"
+                "        except Exception:\n"
+                "            self.result_label.color = (1, 0.45, 0.45, 1)\n"
+                "            self.result_label.text = 'Please fill valid numbers.'\n\n"
+                "    def clear_fields(self, _instance):\n"
+                "        self.principal_input.text = ''\n"
+                "        self.rate_input.text = ''\n"
+                "        self.time_input.text = ''\n"
+                "        self.result_label.color = (0.9, 0.93, 0.96, 1)\n"
+                "        self.result_label.text = 'Enter values and tap Calculate'\n\n"
+                "if __name__ == '__main__':\n"
+                "    CompoundInterestApp().run()\n"
+            )
+            label = "Compound Interest Calculator"
+        elif tpl_key == "calc":
+            code = (
+                "from kivy.app import App\n"
+                "from kivy.uix.boxlayout import BoxLayout\n"
+                "from kivy.uix.gridlayout import GridLayout\n"
+                "from kivy.uix.textinput import TextInput\n"
+                "from kivy.uix.button import Button\n"
+                "from kivy.core.window import Window\n"
+                "from kivy.metrics import dp, sp\n\n"
+                "Window.clearcolor = (0.06, 0.08, 0.13, 1)\n\n"
+                "class CalcApp(App):\n"
+                "    def build(self):\n"
+                "        self.title = 'NEON Calculator'\n"
+                "        root = BoxLayout(orientation='vertical', padding=dp(12), spacing=dp(10))\n"
+                "        self.display = TextInput(multiline=False, readonly=True, halign='right', font_size=sp(32), size_hint_y=0.25, background_color=(0.03, 0.05, 0.09, 1), foreground_color=(0.25, 0.92, 0.98, 1))\n"
+                "        root.add_widget(self.display)\n"
+                "        grid = GridLayout(cols=4, spacing=dp(8))\n"
+                "        for b in ['7','8','9','/','4','5','6','*','1','2','3','-','C','0','=','+']:\n"
+                "            btn = Button(text=b, font_size=sp(22), bold=True, background_normal='', background_color=(0.12, 0.18, 0.28, 1) if b not in ('=','C') else ((0.06, 0.58, 0.48, 1) if b=='=' else (0.55, 0.16, 0.22, 1)))\n"
+                "            btn.bind(on_press=self.on_tap)\n"
+                "            grid.add_widget(btn)\n"
+                "        root.add_widget(grid)\n"
+                "        return root\n\n"
+                "    def on_tap(self, inst):\n"
+                "        t = inst.text\n"
+                "        if t == 'C':\n"
+                "            self.display.text = ''\n"
+                "        elif t == '=':\n"
+                "            try:\n"
+                "                self.display.text = str(eval(self.display.text, {'__builtins__': {}}, {}))\n"
+                "            except Exception:\n"
+                "                self.display.text = 'Error'\n"
+                "        else:\n"
+                "            self.display.text += t\n\n"
+                "if __name__ == '__main__':\n"
+                "    CalcApp().run()\n"
+            )
+            label = "Calculator"
+        elif tpl_key == "todo":
+            code = (
+                "from kivy.app import App\n"
+                "from kivy.uix.boxlayout import BoxLayout\n"
+                "from kivy.uix.scrollview import ScrollView\n"
+                "from kivy.uix.textinput import TextInput\n"
+                "from kivy.uix.button import Button\n"
+                "from kivy.uix.label import Label\n"
+                "from kivy.core.window import Window\n"
+                "from kivy.metrics import dp, sp\n\n"
+                "Window.clearcolor = (0.06, 0.08, 0.13, 1)\n\n"
+                "class TodoApp(App):\n"
+                "    def build(self):\n"
+                "        self.title = 'My Todo List'\n"
+                "        root = BoxLayout(orientation='vertical', padding=dp(14), spacing=dp(10))\n"
+                "        root.add_widget(Label(text='My Daily Tasks', font_size=sp(22), bold=True, color=(0.25, 0.85, 0.98, 1), size_hint_y=None, height=dp(40)))\n"
+                "        row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(8))\n"
+                "        self.inp = TextInput(hint_text='Add a new task...', multiline=False, font_size=sp(15))\n"
+                "        add_btn = Button(text='Add', size_hint_x=None, width=dp(80), bold=True, background_normal='', background_color=(0.06, 0.58, 0.48, 1))\n"
+                "        add_btn.bind(on_press=self.add_task)\n"
+                "        row.add_widget(self.inp)\n"
+                "        row.add_widget(add_btn)\n"
+                "        root.add_widget(row)\n"
+                "        sc = ScrollView()\n"
+                "        self.tasks = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(6))\n"
+                "        self.tasks.bind(minimum_height=self.tasks.setter('height'))\n"
+                "        sc.add_widget(self.tasks)\n"
+                "        root.add_widget(sc)\n"
+                "        return root\n\n"
+                "    def add_task(self, _inst):\n"
+                "        txt = self.inp.text.strip()\n"
+                "        if not txt:\n"
+                "            return\n"
+                "        self.inp.text = ''\n"
+                "        item = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))\n"
+                "        item.add_widget(Label(text=f'• {txt}', font_size=sp(15), halign='left'))\n"
+                "        done = Button(text='Done', size_hint_x=None, width=dp(70), background_normal='', background_color=(0.45, 0.16, 0.24, 1))\n"
+                "        done.bind(on_press=lambda *_: self.tasks.remove_widget(item))\n"
+                "        item.add_widget(done)\n"
+                "        self.tasks.add_widget(item)\n\n"
+                "if __name__ == '__main__':\n"
+                "    TodoApp().run()\n"
+            )
+            label = "Todo List"
+        else:
+            code = getattr(self, "_neon_core_source", self.studio_files.get("main.py", ""))
+            label = "NEON PRO Core"
+
+        self._sync_autonomous_code(code, "python")
+        self.studio_status_lbl.text = f"[color=34d399]✓ Loaded {label}! Tap 'Build APK' right above to make Android .apk.[/color]"
+
+    def _studio_test_ast(self):
+        self._save_active_studio_buffer()
+        src = self.studio_files.get("main.py", "")
+        try:
+            ast.parse(src)
+            self.studio_status_lbl.text = "[color=34d399]✓ Check Passed! Code me koi syntax error nahi hai — Build APK ready![/color]"
+        except SyntaxError as err:
+            self.studio_status_lbl.text = f"[color=f87171]✗ Error on line {err.lineno}: {escape_markup(str(err.msg))} (Tap Fix Error)[/color]"
+
+    def _studio_export_zip(self):
+        self._save_active_studio_buffer()
+        try:
+            proj_dir = os.path.join(self._get_data_dir(), "autonomous_projects")
+            os.makedirs(proj_dir, exist_ok=True)
+            zip_path = os.path.join(proj_dir, "NEON_Studio_App.zip")
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for rel_path, content in self.studio_files.items():
+                    zf.writestr(rel_path, content)
+            saved_loc = zip_path
+            if platform == "android":
+                dl_path = "/sdcard/Download/NEON_Studio_App.zip"
+                try:
+                    shutil.copyfile(zip_path, dl_path)
+                    saved_loc = dl_path
+                except Exception:
+                    pass
+            self.studio_status_lbl.text = f"[color=34d399]✓ Saved full 4-file ZIP to: {escape_markup(saved_loc)}[/color]"
+        except Exception as err:
+            self.studio_status_lbl.text = f"[color=f87171]ZIP Save Error: {escape_markup(str(err))}[/color]"
+
+    def _trigger_one_tap_apk_build(self):
+        self._save_active_studio_buffer()
+        self._switch_tab("github")
+        if not self.github_token:
+            self.gh_log.text = (
+                "[b][color=fbbf24]Step 1:[/color][/b] Upar GitHub Token paste karo (sirf ek baar save hota hai).\n"
+                "[b][color=34d399]Step 2:[/color][/b] Fir 'Build Real APK' button dabao — main.py, buildozer.spec, requirements.txt aur Cloud YML sab khud push ho jayenge!"
+            )
+            return
+        self._gh_push_studio_app()
+
     def _send_code_to_debugger(self):
+        self._save_active_studio_buffer()
         self.dbg_code.text = self.studio_editor.text[:6000]
         self._switch_tab("debugger")
 
     def _studio_ai_generate(self):
         goal = self.studio_prompt.text.strip()
         if not goal:
+            self.studio_status_lbl.text = "[color=fbbf24]Pehle upar likho kaunsa app banana hai (ya Compound Calc template dabao).[/color]"
             return
         if not self.api_key:
             self._open_settings_modal()
             return
         self.studio_gen_btn.disabled = True
-        self.studio_gen_btn.text = "Building..."
+        self.studio_gen_btn.text = "Creating..."
+        self.studio_status_lbl.text = "[color=38bdf8]NEON PRO aapke liye app likh raha hai...[/color]"
 
         def _worker():
             sys_p = (
@@ -2131,14 +2551,41 @@ class NeonProMobileSuite(BoxLayout):
                 prefer_pro=self.high_thinking,
             )
 
+            cleaned = None
+            ast_ok = False
+            if txt:
+                cleaned = txt.replace("```python", "").replace("```", "").strip()
+                try:
+                    ast.parse(cleaned)
+                    ast_ok = True
+                except SyntaxError as s_err:
+                    fix_p = f"Fix the Python SyntaxError on line {s_err.lineno} ({s_err.msg}) and return ONLY valid Python code:\n\n{cleaned}"
+                    fixed_txt, _fm, _ferr = self._call_gemini_rest(
+                        [{"role": "user", "parts": [{"text": fix_p}]}],
+                        system_prompt="Return ONLY clean syntactically valid Python code.",
+                        prefer_pro=False,
+                    )
+                    if fixed_txt:
+                        cleaned = fixed_txt.replace("```python", "").replace("```", "").strip()
+                        try:
+                            ast.parse(cleaned)
+                            ast_ok = True
+                        except Exception:
+                            pass
+
             def _done(_dt):
                 self.studio_gen_btn.disabled = False
-                self.studio_gen_btn.text = "AI Build"
-                if txt:
-                    cleaned = txt.replace("```python", "").replace("```", "").strip()
+                self.studio_gen_btn.text = "Create App"
+                if cleaned:
                     self._sync_autonomous_code(cleaned, "python")
+                    self.studio_status_lbl.text = (
+                        "[color=34d399]✓ App ready & Syntax Checked! Ab 'Build APK' dabao.[/color]"
+                        if ast_ok
+                        else "[color=fbbf24]App saved — 'Check Code' dabakar syntax dekh lo.[/color]"
+                    )
                 else:
                     self.studio_editor.text = f"# Generation failed: {err}"
+                    self.studio_status_lbl.text = f"[color=f87171]Failed: {escape_markup(str(err))}[/color]"
 
             Clock.schedule_once(_done, 0)
 
@@ -2337,7 +2784,7 @@ class NeonProMobileSuite(BoxLayout):
         self.lab_scroll = ScrollView(size_hint=(1, 1), do_scroll_x=False)
         self.lab_log = AutoLabel(
             text=(
-                "[color=22d3ee][b]NEON PRO Build & Device Lab v4.3[/b][/color]\n"
+                "[color=22d3ee][b]NEON PRO Build & Device Lab v4.4[/b][/color]\n"
                 "[color=34d399]Operator: Harish | Platform: "
                 f"{platform.upper()} ({sys_platform.machine()})[/color]\n"
                 f"[color=94a3b8]Python: {sys.version.split()[0]} | Screen: {Window.width}x{Window.height}[/color]\n"
@@ -2395,7 +2842,7 @@ class NeonProMobileSuite(BoxLayout):
             return
         elif "status" in low:
             lines.extend([
-                "[color=34d399]• App Engine:[/color] NEON PRO v4.3 Mobile Suite",
+                "[color=34d399]• App Engine:[/color] NEON PRO v4.4 All-in-One Mobile Builder",
                 f"[color=34d399]• Active Model:[/color] {self.selected_model}",
                 f"[color=34d399]• API Key:[/color] {'Configured' if self.api_key else 'Not Set (Tap Set Key)'}",
                 f"[color=34d399]• Hands-Free:[/color] {'ON' if self.hands_free_mode else 'OFF'} | Persona: {self.voice_persona}",
@@ -2416,23 +2863,23 @@ class NeonProMobileSuite(BoxLayout):
         Clock.schedule_once(lambda _dt: setattr(self.lab_scroll, "scroll_y", 0), 0.05)
 
     # ------------------------------------------------------------------
-    # TAB 5: GITHUB CI (Cloud APK Builder Directly from Android)
+    # TAB 5: GET APK (1-Tap Cloud APK Builder Directly from Phone)
     # ------------------------------------------------------------------
     def _build_github_tab(self):
         root = BoxLayout(orientation="vertical", spacing=dp(8))
 
-        card = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(200), padding=dp(10), spacing=dp(6))
+        card = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(224), padding=dp(10), spacing=dp(6))
         style_card(card, (0.04, 0.055, 0.115, 1.0), (0.55, 0.30, 0.85, 0.55), radius_dp=12)
         card.add_widget(
             AutoLabel(
-                text="[b][color=c084fc]GitHub Actions APK Builder[/color][/b] [color=94a3b8]• Push & Compile Real Signed APK[/color]",
+                text="[b][color=c084fc]1-Tap Cloud APK Builder[/color][/b] [color=94a3b8]• Auto-pushes all 4 files & builds .apk[/color]",
                 font_size=sp(12),
             )
         )
 
         self.gh_token_input = TextInput(
             text=self.github_token,
-            hint_text="GitHub Token (repo + workflow scopes)...",
+            hint_text="Step 1: Paste GitHub Token once (saved safely)...",
             password=True,
             multiline=False,
             size_hint_y=None,
@@ -2447,7 +2894,7 @@ class NeonProMobileSuite(BoxLayout):
 
         self.gh_repo_input = TextInput(
             text=self.github_repo,
-            hint_text="Repository name (e.g. neon-pro-harish)",
+            hint_text="App Repo Name (e.g. my-neon-apk)",
             multiline=False,
             size_hint_y=None,
             height=dp(38),
@@ -2459,11 +2906,11 @@ class NeonProMobileSuite(BoxLayout):
         )
         card.add_widget(self.gh_repo_input)
 
-        btn_row = BoxLayout(size_hint_y=None, height=dp(38), spacing=dp(6))
+        btn_row = BoxLayout(size_hint_y=None, height=dp(38), spacing=dp(5))
         self.gh_push_btn = make_button(
-            "Push & Build APK",
+            "Build Real APK",
             (0.05, 0.52, 0.40, 1.0),
-            (0.15, 0.88, 0.62, 0.8),
+            (0.15, 0.88, 0.62, 0.85),
             radius_dp=8,
             font_sp=11,
         )
@@ -2471,7 +2918,7 @@ class NeonProMobileSuite(BoxLayout):
         btn_row.add_widget(self.gh_push_btn)
 
         self.gh_runs_btn = make_button(
-            "Check Runs",
+            "Check Status",
             (0.28, 0.16, 0.58, 1.0),
             (0.65, 0.42, 0.95, 0.7),
             radius_dp=8,
@@ -2480,6 +2927,16 @@ class NeonProMobileSuite(BoxLayout):
         self.gh_runs_btn.bind(on_release=lambda *_: self._gh_check_runs())
         btn_row.add_widget(self.gh_runs_btn)
 
+        self.gh_open_btn = make_button(
+            "Open Download",
+            (0.08, 0.22, 0.42, 1.0),
+            (0.25, 0.62, 0.96, 0.7),
+            radius_dp=8,
+            font_sp=11,
+        )
+        self.gh_open_btn.bind(on_release=lambda *_: self._gh_open_actions_browser())
+        btn_row.add_widget(self.gh_open_btn)
+
         card.add_widget(btn_row)
         root.add_widget(card)
 
@@ -2487,13 +2944,33 @@ class NeonProMobileSuite(BoxLayout):
         style_card(out_card, (0.02, 0.03, 0.065, 1.0), (0.08, 0.45, 0.65, 0.5), radius_dp=12)
         gh_scroll = ScrollView(size_hint=(1, 1), do_scroll_x=False)
         self.gh_log = AutoLabel(
-            text="[color=94a3b8]Save your GitHub token above to push generated App Studio code straight to GitHub Actions or inspect APK builds from your phone.[/color]",
+            text=(
+                "[b][color=22d3ee]Easy 3-Step APK Guide:[/color][/b]\n"
+                "[color=cbd5e1]1. Paste your GitHub Token once above.\n"
+                "2. Tap 'Build Real APK' — pushes main.py, buildozer.spec, requirements.txt & CI YML automatically.\n"
+                "3. Wait ~5 min, tap 'Check Status' or 'Open Download' to install your real .apk![/color]"
+            ),
             font_size=sp(12),
         )
         gh_scroll.add_widget(self.gh_log)
         out_card.add_widget(gh_scroll)
         root.add_widget(out_card)
         return root
+
+    def _gh_open_actions_browser(self):
+        repo = self.gh_repo_input.text.strip() or self.github_repo or "neon-pro-harish"
+        owner = getattr(self, "_gh_owner_cache", "")
+        if owner:
+            webbrowser.open(f"https://github.com/{owner}/{repo}/actions")
+        elif self.github_token:
+            code, user = self._gh_get("https://api.github.com/user", self.github_token)
+            if code == 200 and isinstance(user, dict) and user.get("login"):
+                self._gh_owner_cache = user["login"]
+                webbrowser.open(f"https://github.com/{self._gh_owner_cache}/{repo}/actions")
+                return
+            webbrowser.open("https://github.com")
+        else:
+            webbrowser.open("https://github.com")
 
     def _gh_headers(self, token):
         return {
@@ -2558,9 +3035,9 @@ class NeonProMobileSuite(BoxLayout):
         self.github_repo = repo
         self._save_config()
         if not token:
-            self.gh_log.text = "[color=fbbf24]Please paste your GitHub Personal Access Token first.[/color]"
+            self.gh_log.text = "[color=fbbf24]Please paste your GitHub Token first.[/color]"
             return
-        self.gh_log.text = "[color=38bdf8]Fetching GitHub Actions builds...[/color]"
+        self.gh_log.text = "[color=38bdf8]Checking APK builds & downloads...[/color]"
 
         def _worker():
             code, user = self._gh_get("https://api.github.com/user", token)
@@ -2569,45 +3046,60 @@ class NeonProMobileSuite(BoxLayout):
                 Clock.schedule_once(lambda _dt: setattr(self.gh_log, "text", msg), 0)
                 return
             owner = user.get("login", "")
+            self._gh_owner_cache = owner
             rc, runs_data = self._gh_get(
                 f"https://api.github.com/repos/{owner}/{repo}/actions/runs?per_page=5",
                 token,
             )
             if rc != 200:
-                msg = f"[color=fbbf24]Repo '{owner}/{repo}' not found or no workflow runs yet.[/color]"
+                msg = f"[color=fbbf24]Repo '{owner}/{repo}' not found yet — tap 'Build Real APK' first.[/color]"
                 Clock.schedule_once(lambda _dt: setattr(self.gh_log, "text", msg), 0)
                 return
-            lines = [f"[b][color=34d399]Owner: {owner} | Repo: {repo}[/color][/b]"]
+            lines = [f"[b][color=34d399]Repo: {owner}/{repo}[/color][/b]"]
             for r in runs_data.get("workflow_runs", [])[:5]:
                 st = r.get("conclusion") or r.get("status")
                 clr = "34d399" if st == "success" else ("f87171" if st == "failure" else "38bdf8")
-                lines.append(f"[color={clr}]• {escape_markup(r.get('name', 'Build'))}: {st}[/color]")
-            lines.append(f"[color=94a3b8]Actions URL: https://github.com/{owner}/{repo}/actions[/color]")
+                lines.append(f"[color={clr}]• {escape_markup(r.get('name', 'APK Build'))}: {st}[/color]")
+
+            ac, art_data = self._gh_get(
+                f"https://api.github.com/repos/{owner}/{repo}/actions/artifacts?per_page=3",
+                token,
+            )
+            if ac == 200 and isinstance(art_data, dict):
+                arts = art_data.get("artifacts", [])
+                if arts:
+                    lines.append("\n[b][color=22d3ee]Ready APK Artifacts:[/color][/b]")
+                    for a in arts[:3]:
+                        mb = round((a.get("size_in_bytes", 0) or 0) / (1024 * 1024), 1)
+                        lines.append(f"[color=34d399]✓ {escape_markup(a.get('name', 'APK'))} ({mb} MB)[/color]")
+            lines.append(f"\n[color=94a3b8]Tap 'Open Download' or visit:\nhttps://github.com/{owner}/{repo}/actions[/color]")
             final_txt = "\n".join(lines)
             Clock.schedule_once(lambda _dt: setattr(self.gh_log, "text", final_txt), 0)
 
         threading.Thread(target=_worker, daemon=True).start()
 
     def _gh_push_studio_app(self):
+        self._save_active_studio_buffer()
         token = self.gh_token_input.text.strip()
         repo = self.gh_repo_input.text.strip() or "neon-pro-harish"
         self.github_token = token
         self.github_repo = repo
         self._save_config()
         if not token:
-            self.gh_log.text = "[color=fbbf24]Please paste your GitHub Personal Access Token first.[/color]"
+            self.gh_log.text = "[color=fbbf24]Step 1: Upar GitHub Token paste karo, fir 'Build Real APK' dabao.[/color]"
             return
         self.gh_push_btn.disabled = True
-        self.gh_log.text = "[color=38bdf8]Pushing App Studio code to GitHub...[/color]"
-        app_code = self.studio_editor.text
+        self.gh_log.text = "[color=38bdf8]Pushing all 4 APK build files (main.py, buildozer.spec, requirements.txt, CI YML)...[/color]"
+        files_bundle = dict(self.studio_files)
 
         def _worker():
             code, user = self._gh_get("https://api.github.com/user", token)
             if code != 200:
-                msg = f"[color=f87171]GitHub Auth Failed ({code})[/color]"
+                msg = f"[color=f87171]GitHub Auth Failed ({code}): Check token scopes (repo + workflow).[/color]"
                 Clock.schedule_once(lambda _dt: (setattr(self.gh_push_btn, "disabled", False), setattr(self.gh_log, "text", msg)), 0)
                 return
             owner = user.get("login", "")
+            self._gh_owner_cache = owner
             r_code, repo_info = self._gh_get(f"https://api.github.com/repos/{owner}/{repo}", token)
             if r_code == 404:
                 self._http_post_json(
@@ -2615,24 +3107,50 @@ class NeonProMobileSuite(BoxLayout):
                     {"name": repo, "auto_init": True},
                     headers=self._gh_headers(token),
                 )
-                time.sleep(1.5)
+                time.sleep(1.8)
                 r_code, repo_info = self._gh_get(f"https://api.github.com/repos/{owner}/{repo}", token)
             branch = repo_info.get("default_branch", "main") if isinstance(repo_info, dict) else "main"
-            target_path = "main.py"
-            f_url = f"https://api.github.com/repos/{owner}/{repo}/contents/{target_path}"
-            ex_code, ex_data = self._gh_get(f"{f_url}?ref={branch}", token)
-            put_body = {
-                "message": "[NEON PRO Mobile] Autonomous update from Harish phone",
-                "content": base64.b64encode(app_code.encode("utf-8")).decode("ascii"),
-                "branch": branch,
-            }
-            if ex_code == 200 and isinstance(ex_data, dict) and ex_data.get("sha"):
-                put_body["sha"] = ex_data["sha"]
-            p_code, p_res = self._gh_put(f_url, token, put_body)
-            if p_code in (200, 201):
-                msg = f"[color=34d399][b]✓ Pushed main.py to {owner}/{repo}![/b]\nGitHub Actions URL:\nhttps://github.com/{owner}/{repo}/actions[/color]"
+
+            push_order = [
+                ".github/workflows/build_apk.yml",
+                "requirements.txt",
+                "buildozer.spec",
+                "main.py",
+            ]
+            pushed_ok = []
+            errors = []
+            for target_path in push_order:
+                content_str = files_bundle.get(target_path, "")
+                if not content_str:
+                    continue
+                f_url = f"https://api.github.com/repos/{owner}/{repo}/contents/{target_path}"
+                ex_code, ex_data = self._gh_get(f"{f_url}?ref={branch}", token)
+                put_body = {
+                    "message": f"[NEON PRO v4.4] Update {target_path}",
+                    "content": base64.b64encode(content_str.encode("utf-8")).decode("ascii"),
+                    "branch": branch,
+                }
+                if ex_code == 200 and isinstance(ex_data, dict) and ex_data.get("sha"):
+                    put_body["sha"] = ex_data["sha"]
+                p_code, p_res = self._gh_put(f_url, token, put_body)
+                if p_code in (200, 201):
+                    pushed_ok.append(target_path)
+                else:
+                    err_m = p_res.get("message", str(p_res)) if isinstance(p_res, dict) else str(p_res)
+                    errors.append(f"{target_path}: {p_code} {err_m}")
+
+            if pushed_ok and not errors:
+                msg = (
+                    f"[color=34d399][b]✓ All {len(pushed_ok)} files pushed & APK build started![/b][/color]\n"
+                    f"[color=cbd5e1]Files: {', '.join(pushed_ok)}\n"
+                    f"Wait ~5 mins, then tap 'Check Status' or 'Open Download':\n"
+                    f"https://github.com/{owner}/{repo}/actions[/color]"
+                )
             else:
-                msg = f"[color=f87171]Push error ({p_code}): {escape_markup(str(p_res))}[/color]"
+                msg = (
+                    f"[color=fbbf24]Pushed: {len(pushed_ok)} | Issues: {len(errors)}[/color]\n"
+                    + escape_markup("\n".join(errors))
+                )
             Clock.schedule_once(lambda _dt: (setattr(self.gh_push_btn, "disabled", False), setattr(self.gh_log, "text", msg)), 0)
 
         threading.Thread(target=_worker, daemon=True).start()
@@ -2641,13 +3159,13 @@ class NeonProMobileSuite(BoxLayout):
     # SETTINGS & API KEY MODAL
     # ------------------------------------------------------------------
     def _open_settings_modal(self):
-        modal = ModalView(size_hint=(0.94, None), height=dp(440), background_color=(0, 0, 0, 0.75))
-        box = BoxLayout(orientation="vertical", padding=dp(15), spacing=dp(10))
+        modal = ModalView(size_hint=(0.94, None), height=dp(505), background_color=(0, 0, 0, 0.78))
+        box = BoxLayout(orientation="vertical", padding=dp(14), spacing=dp(8))
         style_card(box, (0.04, 0.06, 0.12, 1.0), (0.08, 0.72, 0.88, 0.75), radius_dp=16, border_width=1.3)
 
         hdr = BoxLayout(size_hint_y=None, height=dp(32))
         hdr.add_widget(
-            AutoLabel(text="[b][color=22d3ee]NEON PRO Settings & API[/color][/b]", font_size=sp(15))
+            AutoLabel(text="[b][color=22d3ee]NEON PRO Quick Setup[/color][/b]", font_size=sp(15))
         )
         close_btn = make_button(
             "Close",
@@ -2663,7 +3181,7 @@ class NeonProMobileSuite(BoxLayout):
         box.add_widget(hdr)
 
         box.add_widget(
-            AutoLabel(text="[color=cbd5e1]Gemini API Key (Saved offline on device):[/color]", font_size=sp(11))
+            AutoLabel(text="[color=cbd5e1]Gemini API Key (Saved on phone):[/color]", font_size=sp(11))
         )
         key_inp = TextInput(
             text=self.api_key,
@@ -2671,16 +3189,33 @@ class NeonProMobileSuite(BoxLayout):
             password=True,
             multiline=False,
             size_hint_y=None,
-            height=dp(42),
+            height=dp(40),
             background_color=(0.02, 0.03, 0.06, 1.0),
             foreground_color=(1, 1, 1, 1),
             font_size=sp(12),
-            padding=[dp(10), dp(10), dp(10), dp(10)],
+            padding=[dp(10), dp(9), dp(10), dp(9)],
         )
         box.add_widget(key_inp)
 
-        box.add_widget(AutoLabel(text="[color=cbd5e1]Select Gemini Model:[/color]", font_size=sp(11)))
-        model_row = BoxLayout(size_hint_y=None, height=dp(36), spacing=dp(5))
+        box.add_widget(
+            AutoLabel(text="[color=cbd5e1]GitHub Token (Optional — for 1-Tap Build APK):[/color]", font_size=sp(11))
+        )
+        gh_inp = TextInput(
+            text=self.github_token,
+            hint_text="Paste GitHub Token (ghp_...)",
+            password=True,
+            multiline=False,
+            size_hint_y=None,
+            height=dp(40),
+            background_color=(0.02, 0.03, 0.06, 1.0),
+            foreground_color=(1, 1, 1, 1),
+            font_size=sp(12),
+            padding=[dp(10), dp(9), dp(10), dp(9)],
+        )
+        box.add_widget(gh_inp)
+
+        box.add_widget(AutoLabel(text="[color=cbd5e1]Select AI Model:[/color]", font_size=sp(11)))
+        model_row = BoxLayout(size_hint_y=None, height=dp(34), spacing=dp(5))
         model_btns = {}
 
         def _refresh_modal_pills():
@@ -2706,7 +3241,7 @@ class NeonProMobileSuite(BoxLayout):
         box.add_widget(model_row)
 
         box.add_widget(AutoLabel(text="[color=cbd5e1]Language Mode:[/color]", font_size=sp(11)))
-        lang_row = BoxLayout(size_hint_y=None, height=dp(36), spacing=dp(6))
+        lang_row = BoxLayout(size_hint_y=None, height=dp(34), spacing=dp(6))
         lang_btns = {}
 
         def _refresh_lang_pills():
@@ -2744,13 +3279,16 @@ class NeonProMobileSuite(BoxLayout):
 
         def _save_and_close(*_a):
             self.api_key = key_inp.text.strip()
+            self.github_token = gh_inp.text.strip()
+            if hasattr(self, "gh_token_input"):
+                self.gh_token_input.text = self.github_token
             self.discovered_models = []
             self.voice_bridge.configure(api_key=self.api_key)
             self._save_config()
             self._refresh_header_state()
             modal.dismiss()
             if self.api_key:
-                ok_msg = "API key save ho gayi Harish! Ab bolo ya likho, main ready hoon."
+                ok_msg = "Settings save ho gayi Harish! Ab bolo ya likho, main ready hoon."
                 self._add_message_card("assistant", ok_msg, model_tag="System")
                 if self.audio_enabled:
                     self.voice_bridge.speak(ok_msg)
