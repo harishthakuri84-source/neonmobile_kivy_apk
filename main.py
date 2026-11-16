@@ -37,6 +37,11 @@ try:
 except Exception:
     requests = None
 
+try:
+    import winsound
+except Exception:
+    winsound = None
+
 from kivy.app import App
 from kivy.clock import Clock
 from kivy.core.audio import SoundLoader
@@ -409,6 +414,38 @@ class AndroidVoiceBridge:
                     Clock.schedule_once(lambda _dt: self._notify_speak_finished(gen), 0.1)
 
                 threading.Thread(target=_termux, daemon=True).start()
+            elif sys.platform.startswith("win") and shutil.which("powershell"):
+                def _win_tts():
+                    try:
+                        env = os.environ.copy()
+                        env["NEON_TTS_TEXT"] = clean_text[:450]
+                        ps_cmd = (
+                            "Add-Type -AssemblyName System.Speech; "
+                            "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+                            "$s.Speak($env:NEON_TTS_TEXT)"
+                        )
+                        cflags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+                        subprocess.run(
+                            ["powershell", "-NoProfile", "-Command", ps_cmd],
+                            env=env,
+                            check=False,
+                            creationflags=cflags,
+                        )
+                    except Exception:
+                        pass
+                    Clock.schedule_once(lambda _dt: self._notify_speak_finished(gen), 0.1)
+
+                threading.Thread(target=_win_tts, daemon=True).start()
+            elif shutil.which("espeak-ng") or shutil.which("espeak") or shutil.which("spd-say"):
+                def _linux_tts():
+                    cmd = shutil.which("espeak-ng") or shutil.which("espeak") or shutil.which("spd-say")
+                    try:
+                        subprocess.run([cmd, clean_text[:400]], check=False)
+                    except Exception:
+                        pass
+                    Clock.schedule_once(lambda _dt: self._notify_speak_finished(gen), 0.1)
+
+                threading.Thread(target=_linux_tts, daemon=True).start()
             else:
                 Clock.schedule_once(lambda _dt: self._notify_speak_finished(gen), 0.6)
             return
@@ -478,81 +515,85 @@ class AndroidVoiceBridge:
         _try_speak(0)
 
     def _fetch_gemini_tts_wav(self, clean_text):
-        """Call Gemini TTS endpoint directly over HTTPS and write WAV file if available."""
+        """Call Gemini TTS v1beta endpoint with retries and write WAV file."""
         if not self._api_key:
             return None
-        url = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/"
-            f"gemini-3.8-flash-lite-tts:generateContent?key={self._api_key}"
-        )
-        payload = {
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [{"text": clean_text[:700]}],
-                }
-            ],
-            "generationConfig": {
-                "responseModalities": ["AUDIO"],
-                "speechConfig": {
-                    "voiceConfig": {
-                        "prebuiltVoiceConfig": {"voiceName": self._voice_persona or "Fenrir"}
-                    }
+        attempts = [
+            (
+                "gemini-3.8-flash-lite-tts",
+                f"Speak warmly and clearly in fluent Indian Hindi/Hinglish/English: {clean_text[:700]}",
+            ),
+            ("gemini-3.8-flash-lite-tts", clean_text[:700]),
+            ("gemini-3.8-flash-tts", clean_text[:700]),
+        ]
+        _ssl_ctx, req_verify = _build_ssl_context()
+        for model_name, prompt_txt in attempts:
+            url = (
+                f"https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{model_name}:generateContent?key={self._api_key}"
+            )
+            payload = {
+                "contents": [{"role": "user", "parts": [{"text": prompt_txt}]}],
+                "generationConfig": {
+                    "responseModalities": ["AUDIO"],
+                    "speechConfig": {
+                        "voiceConfig": {
+                            "prebuiltVoiceConfig": {"voiceName": self._voice_persona or "Fenrir"}
+                        }
+                    },
                 },
-            },
-        }
-        try:
-            data = None
-            _ssl_ctx, req_verify = _build_ssl_context()
-            if requests is not None:
-                try:
+            }
+            try:
+                data = None
+                if requests is not None:
                     try:
-                        resp = requests.post(url, json=payload, timeout=14, verify=req_verify)
-                    except Exception as r_err:
-                        if _is_ssl_exception(r_err) and req_verify is not False:
-                            _activate_unverified_ssl_fallback()
-                            resp = requests.post(url, json=payload, timeout=14, verify=False)
-                        else:
-                            raise
-                    if resp.status_code == 200:
-                        data = resp.json()
-                except Exception:
-                    data = None
-            if data is None:
-                req = urllib.request.Request(
-                    url,
-                    data=json.dumps(payload).encode("utf-8"),
-                    headers={"Content-Type": "application/json"},
-                    method="POST",
-                )
-                code, raw_text = _urlopen_with_ssl_retry(req, timeout=14)
-                if code == 200:
-                    data = json.loads(raw_text)
-
-            if not data:
-                return None
-            cands = data.get("candidates") or []
-            if not cands:
-                return None
-            parts = cands[0].get("content", {}).get("parts", [])
-            b64 = None
-            for p in parts:
-                idata = p.get("inlineData") or p.get("inline_data")
-                if idata and idata.get("data"):
-                    b64 = idata["data"]
-                    break
-            if not b64:
-                return None
-            raw_audio = base64.b64decode(b64)
-            wav_bytes = _pcm_to_wav_bytes(raw_audio)
-            out_dir = self.get_data_dir()
-            os.makedirs(out_dir, exist_ok=True)
-            wav_path = os.path.join(out_dir, "neon_tts_reply.wav")
-            with open(wav_path, "wb") as fh:
-                fh.write(wav_bytes)
-            return wav_path
-        except Exception:
-            return None
+                        try:
+                            resp = requests.post(url, json=payload, timeout=14, verify=req_verify)
+                        except Exception as r_err:
+                            if _is_ssl_exception(r_err) and req_verify is not False:
+                                _activate_unverified_ssl_fallback()
+                                resp = requests.post(url, json=payload, timeout=14, verify=False)
+                            else:
+                                raise
+                        if resp.status_code == 200:
+                            data = resp.json()
+                    except Exception:
+                        data = None
+                if data is None:
+                    req = urllib.request.Request(
+                        url,
+                        data=json.dumps(payload).encode("utf-8"),
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    )
+                    code, raw_text = _urlopen_with_ssl_retry(req, timeout=14)
+                    if code == 200:
+                        data = json.loads(raw_text)
+                if not data:
+                    continue
+                cands = data.get("candidates") or []
+                if not cands:
+                    continue
+                parts = cands[0].get("content", {}).get("parts", [])
+                b64 = None
+                for p in parts:
+                    idata = p.get("inlineData") or p.get("inline_data")
+                    if idata and idata.get("data"):
+                        b64 = idata["data"]
+                        break
+                if not b64:
+                    continue
+                raw_audio = base64.b64decode(b64)
+                wav_bytes = _pcm_to_wav_bytes(raw_audio)
+                out_dir = self.get_data_dir()
+                os.makedirs(out_dir, exist_ok=True)
+                wav_path = os.path.join(out_dir, "neon_tts_reply.wav")
+                with open(wav_path, "wb") as fh:
+                    fh.write(wav_bytes)
+                return wav_path
+            except Exception:
+                continue
+        return None
 
     def speak(self, text):
         if not text:
@@ -573,6 +614,15 @@ class AndroidVoiceBridge:
             if gen != self._speak_gen:
                 return
             if wav_path and os.path.exists(wav_path):
+                # On Windows (.exe), winsound plays standard RIFF WAV natively without Kivy audio plugin limits
+                if sys.platform.startswith("win") and winsound is not None:
+                    try:
+                        winsound.PlaySound(wav_path, winsound.SND_FILENAME)
+                        Clock.schedule_once(lambda _dt: self._notify_speak_finished(gen), 0.1)
+                        return
+                    except Exception:
+                        pass
+
                 def _play_wav(_dt):
                     if gen != self._speak_gen:
                         return
@@ -585,6 +635,38 @@ class AndroidVoiceBridge:
                             return
                     except BaseException:
                         pass
+                    if platform == "android":
+                        try:
+                            from jnius import autoclass
+
+                            MediaPlayer = autoclass("android.media.MediaPlayer")
+                            mp = MediaPlayer()
+                            mp.setDataSource(wav_path)
+                            mp.prepare()
+                            mp.start()
+
+                            def _poll_mp(_dt2):
+                                if gen != self._speak_gen:
+                                    try:
+                                        mp.stop()
+                                        mp.release()
+                                    except BaseException:
+                                        pass
+                                    return False
+                                try:
+                                    if mp.isPlaying():
+                                        return True
+                                    mp.release()
+                                except BaseException:
+                                    pass
+                                self._notify_speak_finished(gen)
+                                return False
+
+                            self._cancel_poll()
+                            self._poll_ev = Clock.schedule_interval(_poll_mp, 0.35)
+                            return
+                        except BaseException:
+                            pass
                     self._speak_native_with_retry(cleaned, gen)
 
                 Clock.schedule_once(_play_wav, 0)
@@ -918,6 +1000,12 @@ class NeonProMobileSuite(BoxLayout):
         self.tab_buttons = {}
         self._pending_busy = False
         self._tts_cooldown_ev = None
+        self._is_executing = False
+        self._exe_pct = 0
+        self._apk_pct = 0
+        self._build_poll_ev = None
+        self._last_completed_run_id = None
+        self.brain_lessons = self._load_brain_memory()
 
         self.voice_bridge = AndroidVoiceBridge(
             status_callback=self._update_voice_banner,
@@ -935,6 +1023,7 @@ class NeonProMobileSuite(BoxLayout):
         self._build_header()
         self._build_controls_strip()
         self._build_tab_bar()
+        self._build_execution_strip()
         self._build_screens()
         self._refresh_header_state()
         self._switch_tab("console")
@@ -987,6 +1076,164 @@ class NeonProMobileSuite(BoxLayout):
                 json.dump(self.config_data, fh)
         except Exception:
             pass
+
+    # ------------------------------------------------------------------
+    # NEON Brain: Lightweight Self-Learning Persistent Memory (neon_brain/memory.json)
+    # ------------------------------------------------------------------
+    def _get_brain_dir(self):
+        bdir = os.path.join(self._get_data_dir(), "neon_brain")
+        os.makedirs(bdir, exist_ok=True)
+        return bdir
+
+    def _get_brain_path(self):
+        return os.path.join(self._get_brain_dir(), "memory.json")
+
+    def _default_brain_lessons(self):
+        return [
+            {
+                "id": "core-dl-rule",
+                "category": "preference",
+                "lesson": "Download APK/EXE buttons must only download binaries directly—never re-push or cancel builds.",
+                "source": "core",
+            },
+            {
+                "id": "core-tts-v1beta",
+                "category": "mistake_lesson",
+                "lesson": "Always call gemini-3.8-flash-lite-tts on v1beta and wrap raw PCM into RIFF WAV headers.",
+                "source": "self_heal",
+            },
+            {
+                "id": "core-buildozer-ssl",
+                "category": "skill_pattern",
+                "lesson": "Android buildozer.spec pins p4a.branch=v2024.01.21, android.ndk=25b, android.ndk_api=21, and openssl.",
+                "source": "self_heal",
+            },
+        ]
+
+    def _load_brain_memory(self):
+        path = self._get_brain_path()
+        try:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+                if isinstance(data, list) and data:
+                    return data[:80]
+        except Exception:
+            pass
+        seeds = self._default_brain_lessons()
+        self._save_brain_memory(seeds)
+        return seeds
+
+    def _save_brain_memory(self, lessons):
+        trimmed = list(lessons)[:80]
+        try:
+            with open(self._get_brain_path(), "w", encoding="utf-8") as fh:
+                json.dump(trimmed, fh, indent=2)
+        except Exception:
+            pass
+        self.brain_lessons = trimmed
+        if hasattr(self, "brain_pill"):
+            self.brain_pill.text = f"Brain ({len(trimmed)})"
+
+    def _learn_to_brain(self, category, lesson_text, source="self_heal"):
+        clean = " ".join(str(lesson_text or "").split())[:240]
+        if not clean:
+            return
+        cur = getattr(self, "brain_lessons", []) or []
+        if any(str(x.get("lesson", "")).lower() == clean.lower() for x in cur):
+            return
+        entry = {
+            "id": f"brain-{int(time.time() * 1000)}",
+            "category": category or "mistake_lesson",
+            "lesson": clean,
+            "source": source,
+        }
+        updated = [entry] + cur
+        self._save_brain_memory(updated[:80])
+
+    def _build_brain_context(self):
+        cur = (getattr(self, "brain_lessons", []) or [])[:12]
+        if not cur:
+            return ""
+        lines = ["\n[NEON BRAIN LEARNED RULES (Follow Strictly)]:"]
+        for item in cur:
+            lines.append(f"- [{item.get('category', 'rule')}] {item.get('lesson', '')}")
+        return "\n".join(lines)
+
+    def _open_brain_modal(self):
+        modal = ModalView(size_hint=(0.94, None), height=dp(470), background_color=(0, 0, 0, 0.80))
+        box = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(8))
+        style_card(box, (0.04, 0.06, 0.12, 1.0), (0.08, 0.72, 0.88, 0.75), radius_dp=14)
+
+        hdr = BoxLayout(size_hint_y=None, height=dp(30))
+        hdr.add_widget(
+            AutoLabel(
+                text=f"[b][color=22d3ee]NEON Brain[/color][/b] [color=94a3b8]({len(self.brain_lessons)}/80 rules • neon_brain/memory.json)[/color]",
+                font_size=sp(12),
+            )
+        )
+        close_b = make_button(
+            "Close",
+            (0.18, 0.08, 0.12, 1.0),
+            (0.85, 0.28, 0.38, 0.65),
+            radius_dp=8,
+            font_sp=10,
+            size_hint=(None, None),
+            size=(dp(56), dp(28)),
+        )
+        close_b.bind(on_release=lambda *_: modal.dismiss())
+        hdr.add_widget(close_b)
+        box.add_widget(hdr)
+
+        add_row = BoxLayout(size_hint_y=None, height=dp(38), spacing=dp(5))
+        teach_inp = TextInput(
+            hint_text="Teach a permanent rule or preference to NEON Brain...",
+            multiline=False,
+            background_color=(0.02, 0.03, 0.06, 1.0),
+            foreground_color=(1, 1, 1, 1),
+            hint_text_color=(0.45, 0.55, 0.68, 1.0),
+            font_size=sp(11),
+            padding=[dp(8), dp(8), dp(8), dp(8)],
+        )
+        add_b = make_button(
+            "Save",
+            (0.04, 0.52, 0.38, 1.0),
+            (0.16, 0.92, 0.62, 0.8),
+            radius_dp=8,
+            font_sp=10,
+            size_hint_x=None,
+            width=dp(60),
+        )
+        add_row.add_widget(teach_inp)
+        add_row.add_widget(add_b)
+        box.add_widget(add_row)
+
+        sc = ScrollView(size_hint=(1, 1), do_scroll_x=False)
+        lst_lbl = AutoLabel(text="", font_size=sp(11))
+        sc.add_widget(lst_lbl)
+        box.add_widget(sc)
+
+        def _render_lessons():
+            lines = []
+            for it in self.brain_lessons[:30]:
+                lines.append(
+                    f"[b][color=38bdf8][{escape_markup(str(it.get('category', 'rule')))}][/color][/b] "
+                    f"[color=e2e8f0]{escape_markup(str(it.get('lesson', '')))}[/color]"
+                )
+            lst_lbl.text = "\n\n".join(lines) or "[color=94a3b8]No rules saved yet.[/color]"
+
+        def _add_lesson(*_a):
+            val = teach_inp.text.strip()
+            if not val:
+                return
+            self._learn_to_brain("preference", val, source="user")
+            teach_inp.text = ""
+            _render_lessons()
+
+        add_b.bind(on_release=_add_lesson)
+        _render_lessons()
+        modal.add_widget(box)
+        modal.open()
 
     # ------------------------------------------------------------------
     # Top Header, Compact Controls Strip & 5-Tab Bar (Matches Preview)
@@ -1102,10 +1349,22 @@ class NeonProMobileSuite(BoxLayout):
             text_rgba=(0.48, 0.98, 0.76, 1.0),
             radius_dp=7,
             font_sp=10,
-            size_hint_x=0.85,
+            size_hint_x=0.82,
         )
         self.selftest_pill.bind(on_release=lambda *_: self._run_self_test_and_heal(auto_fix=True))
         strip.add_widget(self.selftest_pill)
+
+        self.brain_pill = make_button(
+            f"Brain ({len(self.brain_lessons)})",
+            (0.10, 0.12, 0.28, 1.0),
+            (0.35, 0.65, 0.96, 0.70),
+            text_rgba=(0.65, 0.88, 1.0, 1.0),
+            radius_dp=7,
+            font_sp=10,
+            size_hint_x=0.82,
+        )
+        self.brain_pill.bind(on_release=lambda *_: self._open_brain_modal())
+        strip.add_widget(self.brain_pill)
 
         self.add_widget(strip)
 
@@ -1134,6 +1393,139 @@ class NeonProMobileSuite(BoxLayout):
             tab_bar.add_widget(btn)
 
         self.add_widget(tab_bar)
+
+    def _build_execution_strip(self):
+        """Collapsible top 'Executing...' bar showing live EXE% & APK% progress across tabs."""
+        self.exec_strip = BoxLayout(size_hint_y=None, height=0, opacity=0, disabled=True, padding=[dp(8), dp(4)], spacing=dp(6))
+        style_card(self.exec_strip, (0.03, 0.09, 0.16, 1.0), (0.08, 0.78, 0.92, 0.82), radius_dp=10)
+
+        self.exec_lbl = Label(
+            text="[b][color=22d3ee]Executing...[/color][/b] [color=e2e8f0]EXE: 0% | APK: 0%[/color]",
+            markup=True,
+            font_size=sp(10),
+            halign="left",
+            valign="middle",
+        )
+        self.exec_lbl.bind(size=lambda i, s: setattr(i, "text_size", s))
+        self.exec_strip.add_widget(self.exec_lbl)
+
+        dl_go = make_button(
+            "Downloads",
+            (0.04, 0.48, 0.35, 1.0),
+            (0.16, 0.90, 0.60, 0.8),
+            radius_dp=7,
+            font_sp=10,
+            size_hint_x=None,
+            width=dp(74),
+        )
+        dl_go.bind(on_release=lambda *_: self._switch_tab("github"))
+        self.exec_strip.add_widget(dl_go)
+
+        kill_go = make_button(
+            "Kill",
+            (0.35, 0.08, 0.12, 1.0),
+            (0.95, 0.32, 0.40, 0.8),
+            radius_dp=7,
+            font_sp=10,
+            size_hint_x=None,
+            width=dp(44),
+        )
+        kill_go.bind(on_release=lambda *_: self._gh_cancel_stuck_runs())
+        self.exec_strip.add_widget(kill_go)
+
+        self.add_widget(self.exec_strip)
+
+    def _set_execution_progress(self, active, exe_pct=0, apk_pct=0, note=""):
+        self._is_executing = bool(active)
+        self._exe_pct = int(exe_pct or 0)
+        self._apk_pct = int(apk_pct or 0)
+        if not hasattr(self, "exec_strip"):
+            return
+        if active:
+            self.exec_strip.height = dp(42)
+            self.exec_strip.opacity = 1
+            self.exec_strip.disabled = False
+            extra = f" • {escape_markup(note)}" if note else ""
+            self.exec_lbl.text = (
+                f"[b][color=22d3ee]Executing...[/color][/b] "
+                f"[color=a5b4fc]EXE: {self._exe_pct}%[/color] | "
+                f"[color=34d399]APK: {self._apk_pct}%[/color]{extra}"
+            )
+        else:
+            self.exec_strip.height = 0
+            self.exec_strip.opacity = 0
+            self.exec_strip.disabled = True
+
+    def _stop_build_progress_poller(self):
+        ev = getattr(self, "_build_poll_ev", None)
+        if ev is not None:
+            try:
+                ev.cancel()
+            except Exception:
+                pass
+            self._build_poll_ev = None
+
+    def _start_build_progress_poller(self, owner, repo, token):
+        self._stop_build_progress_poller()
+        self._poll_inflight = False
+
+        def _tick(_dt):
+            if getattr(self, "_poll_inflight", False):
+                return True
+            self._poll_inflight = True
+
+            def _bg():
+                try:
+                    rc, rdata = self._gh_get(f"https://api.github.com/repos/{owner}/{repo}/actions/runs?per_page=4", token)
+                    ac, adata = self._gh_get(f"https://api.github.com/repos/{owner}/{repo}/actions/artifacts?per_page=8", token)
+                    runs = rdata.get("workflow_runs", []) if rc == 200 and isinstance(rdata, dict) else []
+                    arts = [a for a in (adata.get("artifacts", []) if ac == 200 and isinstance(adata, dict) else []) if not a.get("expired")]
+                    active_runs = [r for r in runs if r.get("status") in ("in_progress", "queued", "waiting", "pending", "requested")]
+                    top_run = active_runs[0] if active_runs else (runs[0] if runs else None)
+                    has_exe = any("exe" in str(a.get("name", "")).lower() for a in arts)
+                    has_apk = any("apk" in str(a.get("name", "")).lower() for a in arts)
+
+                    exe_pct = 100 if has_exe else (10 if active_runs else 0)
+                    apk_pct = 100 if has_apk else (10 if active_runs else 0)
+                    if top_run:
+                        jc, jdata = self._gh_get(f"https://api.github.com/repos/{owner}/{repo}/actions/runs/{top_run.get('id')}/jobs", token)
+                        if jc == 200 and isinstance(jdata, dict):
+                            for jb in jdata.get("jobs", []):
+                                steps = jb.get("steps") or []
+                                tot = max(len(steps), 1)
+                                done_cnt = sum(1 for sp_i in steps if sp_i.get("status") == "completed")
+                                pct = 100 if jb.get("status") == "completed" else (min(96, max(8, int(((done_cnt + 0.5) / tot) * 100))) if jb.get("status") == "in_progress" else 5)
+                                jname = str(jb.get("name", "")).lower()
+                                if "exe" in jname or "windows" in jname:
+                                    exe_pct = 100 if has_exe else pct
+                                elif "apk" in jname or "android" in jname:
+                                    apk_pct = 100 if has_apk else pct
+
+                    def _apply(_dt2):
+                        self._poll_inflight = False
+                        if active_runs:
+                            self._set_execution_progress(True, exe_pct=exe_pct, apk_pct=apk_pct)
+                        else:
+                            self._set_execution_progress(False, exe_pct=exe_pct, apk_pct=apk_pct)
+                            self._stop_build_progress_poller()
+                            if top_run and top_run.get("status") == "completed" and top_run.get("conclusion") != "cancelled" and (has_apk or has_exe):
+                                rid = top_run.get("id")
+                                if self._last_completed_run_id != rid:
+                                    self._last_completed_run_id = rid
+                                    self._switch_tab("github")
+                                    self._gh_check_runs()
+                                    if self.audio_enabled:
+                                        self.voice_bridge.speak("Harish, cloud build complete ho gaya hai! Ab Download APK File ya Download EXE File tap karo.")
+
+                    Clock.schedule_once(_apply, 0)
+                except Exception:
+                    Clock.schedule_once(lambda _dt2: setattr(self, "_poll_inflight", False), 0)
+
+            threading.Thread(target=_bg, daemon=True).start()
+            return True
+
+        _tick(0)
+        self._build_poll_ev = Clock.schedule_interval(_tick, 10.0)
 
     def _switch_tab(self, tab_key):
         self.active_tab = tab_key
@@ -1904,6 +2296,10 @@ class NeonProMobileSuite(BoxLayout):
             self.chat_input.text = ""
         self._add_message_card("user", prompt)
 
+        low_p = prompt.lower()
+        if any(k in low_p for k in ("yaad rakh", "galat hai", "remember", "sikho", "hamesha", "never do")):
+            self._learn_to_brain("preference", prompt[:220], source="user_chat")
+
         # Auto-detect pasted Python/Kivy code in Chat and launch autonomous APK + EXE build!
         pasted_py = self._extract_python_code(prompt)
         if pasted_py:
@@ -2204,9 +2600,10 @@ class NeonProMobileSuite(BoxLayout):
 
         self.history.append({"role": "user", "parts": [{"text": prompt}]})
         recent = self.history[-10:]
+        brain_ctx = self._build_brain_context()
         reply_text, used_model, err = self._call_gemini_rest(
             recent,
-            system_prompt=DEFAULT_SYSTEM_PROMPT + lang_hint,
+            system_prompt=DEFAULT_SYSTEM_PROMPT + lang_hint + brain_ctx,
             prefer_pro=self.high_thinking,
         )
 
@@ -2442,6 +2839,10 @@ class NeonProMobileSuite(BoxLayout):
                     self.dbg_selftest_btn.text = "Run Self-Test & Auto-Heal"
                 if repaired_code:
                     self._sync_autonomous_code(repaired_code, "python")
+                for hnote in healed_notes[:3]:
+                    self._learn_to_brain("mistake_lesson", f"Self-Heal fixed: {hnote}", source="self_test")
+                if errors_found:
+                    self._learn_to_brain("mistake_lesson", f"Diagnostic issue noted: {errors_found[0][:180]}", source="self_test")
                 self._save_config()
                 self._refresh_header_state()
                 self._add_message_card("assistant", full_report, model_tag="Self-Test")
@@ -2720,17 +3121,17 @@ class NeonProMobileSuite(BoxLayout):
         act_row.add_widget(tok_btn)
         root.add_widget(act_row)
 
-        # Two Clear Download Buttons: Download APK File + Download EXE File
-        dl_row = BoxLayout(size_hint_y=None, height=dp(36), spacing=dp(6))
+        # Strict Separation: Download APK/EXE ONLY downloads compiled binaries; Build APK+EXE starts cloud build
+        dl_row = BoxLayout(size_hint_y=None, height=dp(36), spacing=dp(5))
         self.studio_apk_btn = make_button(
             "Download APK File",
             (0.04, 0.52, 0.38, 1.0),
             (0.16, 0.92, 0.62, 0.88),
             text_rgba=(1.0, 1.0, 1.0, 1.0),
             radius_dp=8,
-            font_sp=11,
+            font_sp=10,
         )
-        self.studio_apk_btn.bind(on_release=lambda *_: self._trigger_one_tap_apk_build(target="apk"))
+        self.studio_apk_btn.bind(on_release=lambda *_: self._gh_download_compiled_artifact(target="apk"))
         dl_row.add_widget(self.studio_apk_btn)
 
         self.studio_exe_btn = make_button(
@@ -2739,10 +3140,22 @@ class NeonProMobileSuite(BoxLayout):
             (0.32, 0.62, 0.98, 0.88),
             text_rgba=(1.0, 1.0, 1.0, 1.0),
             radius_dp=8,
-            font_sp=11,
+            font_sp=10,
         )
-        self.studio_exe_btn.bind(on_release=lambda *_: self._trigger_one_tap_apk_build(target="exe"))
+        self.studio_exe_btn.bind(on_release=lambda *_: self._gh_download_compiled_artifact(target="exe"))
         dl_row.add_widget(self.studio_exe_btn)
+
+        self.studio_build_btn = make_button(
+            "Build APK+EXE",
+            (0.36, 0.14, 0.58, 1.0),
+            (0.75, 0.42, 0.98, 0.85),
+            text_rgba=(1.0, 1.0, 1.0, 1.0),
+            radius_dp=8,
+            font_sp=10,
+            size_hint_x=0.82,
+        )
+        self.studio_build_btn.bind(on_release=lambda *_: self._trigger_one_tap_apk_build(target="apk"))
+        dl_row.add_widget(self.studio_build_btn)
         root.add_widget(dl_row)
 
         editor_card = BoxLayout(orientation="vertical", padding=dp(8), spacing=dp(5))
@@ -3025,6 +3438,7 @@ class NeonProMobileSuite(BoxLayout):
             sys_p = (
                 "Write complete, clean, zero-placeholder runnable Python/Kivy code for Harish's request. "
                 "Return ONLY the complete source code without markdown fences if possible."
+                + self._build_brain_context()
             )
             txt, _m, err = self._call_gemini_rest(
                 [{"role": "user", "parts": [{"text": goal}]}],
@@ -3219,6 +3633,7 @@ class NeonProMobileSuite(BoxLayout):
             )
             txt, _m, err = self._call_gemini_rest(
                 [{"role": "user", "parts": [{"text": prompt}]}],
+                system_prompt=DEFAULT_SYSTEM_PROMPT + self._build_brain_context(),
                 prefer_pro=True,
             )
 
@@ -3227,6 +3642,8 @@ class NeonProMobileSuite(BoxLayout):
                 self.dbg_run_btn.text = "Execute Autonomous Fix"
                 if txt:
                     self.dbg_output.text = f"[color=e2e8f0]{escape_markup(txt)}[/color]"
+                    if err_v:
+                        self._learn_to_brain("mistake_lesson", f"Fixed '{err_v[:85]}': {txt[:110]}", source="debugger")
                 else:
                     self.dbg_output.text = f"[color=fda4af]Debugger Error: {escape_markup(err)}[/color]"
 
@@ -3349,11 +3766,11 @@ class NeonProMobileSuite(BoxLayout):
     def _build_github_tab(self):
         root = BoxLayout(orientation="vertical", spacing=dp(8))
 
-        card = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(260), padding=dp(10), spacing=dp(6))
+        card = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(302), padding=dp(10), spacing=dp(6))
         style_card(card, (0.04, 0.055, 0.115, 1.0), (0.55, 0.30, 0.85, 0.55), radius_dp=12)
         card.add_widget(
             AutoLabel(
-                text="[b][color=c084fc]GitHub CI • Cloud Builder (APK & EXE)[/color][/b] [color=94a3b8]• Token Once, Build Forever[/color]",
+                text="[b][color=c084fc]GitHub CI • Download Hub (APK & EXE)[/color][/b] [color=94a3b8]• Direct Download vs Cloud Build[/color]",
                 font_size=sp(12),
             )
         )
@@ -3368,7 +3785,7 @@ class NeonProMobileSuite(BoxLayout):
         )
         card.add_widget(self.gh_token_status_lbl)
 
-        tok_row = BoxLayout(size_hint_y=None, height=dp(38), spacing=dp(5))
+        tok_row = BoxLayout(size_hint_y=None, height=dp(36), spacing=dp(5))
         self.gh_token_input = TextInput(
             text=self.github_token,
             hint_text="Paste GitHub Token once (saved forever)...",
@@ -3378,7 +3795,7 @@ class NeonProMobileSuite(BoxLayout):
             foreground_color=(1, 1, 1, 1),
             hint_text_color=(0.45, 0.55, 0.68, 1.0),
             font_size=sp(12),
-            padding=[dp(10), dp(9), dp(10), dp(9)],
+            padding=[dp(10), dp(8), dp(10), dp(8)],
         )
         tok_row.add_widget(self.gh_token_input)
 
@@ -3413,17 +3830,17 @@ class NeonProMobileSuite(BoxLayout):
             hint_text="App Repo Name (e.g. neon-pro-harish)",
             multiline=False,
             size_hint_y=None,
-            height=dp(36),
+            height=dp(34),
             background_color=(0.02, 0.03, 0.06, 1.0),
             foreground_color=(1, 1, 1, 1),
             hint_text_color=(0.45, 0.55, 0.68, 1.0),
             font_size=sp(12),
-            padding=[dp(10), dp(8), dp(10), dp(8)],
+            padding=[dp(10), dp(7), dp(10), dp(7)],
         )
         card.add_widget(self.gh_repo_input)
 
-        # Two Prominent Download Buttons: Download APK File + Download EXE File
-        dl_btn_row = BoxLayout(size_hint_y=None, height=dp(38), spacing=dp(6))
+        # Two Strict Direct Download Buttons: NEVER push or cancel builds
+        dl_btn_row = BoxLayout(size_hint_y=None, height=dp(36), spacing=dp(6))
         self.gh_push_btn = make_button(
             "Download APK File",
             (0.04, 0.52, 0.38, 1.0),
@@ -3431,7 +3848,7 @@ class NeonProMobileSuite(BoxLayout):
             radius_dp=8,
             font_sp=11,
         )
-        self.gh_push_btn.bind(on_release=lambda *_: self._gh_push_studio_app(target="apk"))
+        self.gh_push_btn.bind(on_release=lambda *_: self._gh_download_compiled_artifact(target="apk"))
         dl_btn_row.add_widget(self.gh_push_btn)
 
         self.gh_exe_btn = make_button(
@@ -3441,9 +3858,22 @@ class NeonProMobileSuite(BoxLayout):
             radius_dp=8,
             font_sp=11,
         )
-        self.gh_exe_btn.bind(on_release=lambda *_: self._gh_download_exe_action())
+        self.gh_exe_btn.bind(on_release=lambda *_: self._gh_download_compiled_artifact(target="exe"))
         dl_btn_row.add_widget(self.gh_exe_btn)
         card.add_widget(dl_btn_row)
+
+        # Explicit Push & Build Row (Separated completely from Download buttons)
+        build_btn_row = BoxLayout(size_hint_y=None, height=dp(34), spacing=dp(6))
+        self.gh_start_build_btn = make_button(
+            "Push & Build APK + EXE on GitHub",
+            (0.36, 0.14, 0.58, 1.0),
+            (0.75, 0.42, 0.98, 0.85),
+            radius_dp=8,
+            font_sp=10,
+        )
+        self.gh_start_build_btn.bind(on_release=lambda *_: self._gh_push_studio_app(target="apk"))
+        build_btn_row.add_widget(self.gh_start_build_btn)
+        card.add_widget(build_btn_row)
 
         util_row = BoxLayout(size_hint_y=None, height=dp(34), spacing=dp(5))
         self.gh_runs_btn = make_button(
@@ -3457,13 +3887,13 @@ class NeonProMobileSuite(BoxLayout):
         util_row.add_widget(self.gh_runs_btn)
 
         self.gh_cancel_btn = make_button(
-            "Cancel Stuck",
+            "Kill Duplicates",
             (0.32, 0.08, 0.12, 1.0),
             (0.92, 0.30, 0.38, 0.72),
             radius_dp=8,
             font_sp=10,
             size_hint_x=None,
-            width=dp(88),
+            width=dp(96),
         )
         self.gh_cancel_btn.bind(on_release=lambda *_: self._gh_cancel_stuck_runs())
         util_row.add_widget(self.gh_cancel_btn)
@@ -3496,9 +3926,9 @@ class NeonProMobileSuite(BoxLayout):
         self.gh_log = AutoLabel(
             text=(
                 "[b][color=22d3ee]NEON PRO Download Hub (APK + EXE):[/color][/b]\n"
-                "[color=cbd5e1]1. Token sirf 1 baar save karein ('Get Token' ya 'Paste' dabakar) — har naye app me yehi token khud chalega.\n"
-                "2. 'Download APK File' → Android Phone ke liye installable .apk banata hai.\n"
-                "3. 'Download EXE File' → Windows PC ke liye standalone .exe aur EXE bundle deta hai![/color]"
+                "[color=cbd5e1]1. 'Download APK File' & 'Download EXE File' sirf compiled file download karte hain — koi duplicate push nahi hoga!\n"
+                "2. Naya app compile karne ke liye 'Push & Build APK + EXE on GitHub' dabao.\n"
+                "3. Purane queued builds rokne ke liye 'Kill Duplicates' dabao.[/color]"
             ),
             font_size=sp(12),
         )
@@ -3702,17 +4132,196 @@ class NeonProMobileSuite(BoxLayout):
         except Exception:
             return None
 
-    def _gh_download_exe_action(self):
-        saved_loc = self._export_exe_bundle()
-        if self.github_token:
-            self._gh_push_studio_app(target="exe", local_exe_zip=saved_loc)
-        elif saved_loc:
-            self.gh_log.text = (
-                f"[color=34d399][b]✓ Windows EXE Builder Package saved:[/b] {escape_markup(saved_loc)}[/color]\n"
-                "[color=cbd5e1]Direct cloud .exe compile karne ke liye upar 1-baar 'Get Token' se token save kar lo![/color]"
-            )
+    def _get_downloads_folder(self):
+        if platform == "android":
+            cand = "/sdcard/Download"
+            if os.path.isdir(cand):
+                return cand
         else:
+            cand = os.path.join(os.path.expanduser("~"), "Downloads")
+            try:
+                os.makedirs(cand, exist_ok=True)
+                return cand
+            except Exception:
+                pass
+        return self._get_data_dir()
+
+    def _gh_download_artifact_bytes(self, url, token):
+        """Download GitHub Actions artifact ZIP without forwarding GitHub Auth header to Azure Blob redirect."""
+        hdrs = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github.v3+json",
+            "User-Agent": "NEON-PRO-Mobile-v4",
+        }
+        if requests is not None:
+            _ctx, req_verify = _build_ssl_context()
+            try:
+                r = requests.get(url, headers=hdrs, allow_redirects=False, timeout=30, verify=req_verify)
+            except Exception as err:
+                if _is_ssl_exception(err) and req_verify is not False:
+                    _activate_unverified_ssl_fallback()
+                    req_verify = False
+                    r = requests.get(url, headers=hdrs, allow_redirects=False, timeout=30, verify=False)
+                else:
+                    raise
+            if r.status_code in (301, 302, 303, 307, 308):
+                loc = r.headers.get("Location") or r.headers.get("location")
+                if not loc:
+                    raise RuntimeError("Artifact redirect location missing")
+                r2 = requests.get(loc, timeout=90, verify=req_verify)
+                if r2.status_code != 200:
+                    raise RuntimeError(f"Azure CDN HTTP {r2.status_code}")
+                return r2.content
+            if r.status_code == 200:
+                return r.content
+            raise RuntimeError(f"GitHub artifact HTTP {r.status_code}")
+
+        class _NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None
+
+        opener = urllib.request.build_opener(_NoRedirect)
+        req = urllib.request.Request(url, headers=hdrs, method="GET")
+        try:
+            with opener.open(req, timeout=30) as resp:
+                return resp.read()
+        except urllib.error.HTTPError as herr:
+            if herr.code in (301, 302, 303, 307, 308):
+                loc = herr.headers.get("Location")
+                if not loc:
+                    raise RuntimeError("Redirect location missing")
+                ctx, _ = _build_ssl_context()
+                with urllib.request.urlopen(urllib.request.Request(loc, method="GET"), context=ctx, timeout=90) as r2:
+                    return r2.read()
+            raise
+
+    def _gh_download_compiled_artifact(self, target="apk"):
+        """Strict Download-Only: fetches compiled .apk/.exe binary without ever re-pushing or cancelling builds."""
+        token = self.gh_token_input.text.strip() or self.github_token
+        repo = self.gh_repo_input.text.strip() or self.github_repo or "neon-pro-harish"
+        if not token:
+            if target == "exe":
+                saved_zip = self._export_exe_bundle()
+                if saved_zip:
+                    self._switch_tab("github")
+                    self.gh_log.text = (
+                        f"[color=34d399][b]✓ Windows EXE Builder ZIP saved:[/b] {escape_markup(saved_zip)}[/color]\n"
+                        "[color=cbd5e1]Direct cloud .exe download ke liye 1-baar 'Get Token' se token save kar lo![/color]"
+                    )
+                    return
+            self._switch_tab("github")
+            self.gh_log.text = "[color=fbbf24]Pehle 'Get Token' dabakar GitHub Token save karein.[/color]"
             self._open_github_token_modal()
+            return
+
+        self._switch_tab("github")
+        self.gh_log.text = f"[color=38bdf8]Checking compiled .{target.upper()} artifact on GitHub (No duplicate push)...[/color]"
+        if hasattr(self, "studio_status_lbl"):
+            self.studio_status_lbl.text = f"[color=38bdf8]Checking latest compiled .{target.upper()} download...[/color]"
+
+        def _worker():
+            try:
+                code, user = self._gh_get("https://api.github.com/user", token)
+                if code != 200 or not isinstance(user, dict) or not user.get("login"):
+                    Clock.schedule_once(
+                        lambda _dt: setattr(
+                            self.gh_log,
+                            "text",
+                            f"[color=f87171]GitHub Auth Error ({code}) — token dubara check karein.[/color]",
+                        ),
+                        0,
+                    )
+                    return
+                owner = user["login"]
+                self._gh_owner_cache = owner
+                ac, adata = self._gh_get(f"https://api.github.com/repos/{owner}/{repo}/actions/artifacts?per_page=20", token)
+                rc, rdata = self._gh_get(f"https://api.github.com/repos/{owner}/{repo}/actions/runs?per_page=5", token)
+                arts = [a for a in (adata.get("artifacts", []) if ac == 200 and isinstance(adata, dict) else []) if not a.get("expired")]
+                runs = rdata.get("workflow_runs", []) if rc == 200 and isinstance(rdata, dict) else []
+                active_runs = [r for r in runs if r.get("status") in ("in_progress", "queued", "waiting", "pending", "requested")]
+                match_art = next((a for a in arts if target.lower() in str(a.get("name", "")).lower()), None)
+
+                if not match_art:
+                    if active_runs:
+                        def _still_building(_dt):
+                            self._start_build_progress_poller(owner, repo, token)
+                            self.gh_log.text = (
+                                f"[color=fbbf24][b]Build abhi chal raha hai (run #{active_runs[0].get('id')})[/b][/color]\n"
+                                "[color=cbd5e1]Upar live Executing... bar me % dekho — naya duplicate push nahi kiya gaya hai. Complete hote hi download ready ho jayega![/color]"
+                            )
+                        Clock.schedule_once(_still_building, 0)
+                        return
+                    if target == "exe":
+                        saved_zip = self._export_exe_bundle()
+                        msg = (
+                            f"[color=34d399][b]✓ Windows EXE Builder ZIP saved:[/b] {escape_markup(saved_zip)}[/color]\n"
+                            "[color=cbd5e1]Cloud .EXE compile abhi ready nahi tha — 'Push & Build APK + EXE on GitHub' dabakar cloud build chalayein.[/color]"
+                        ) if saved_zip else "[color=fbbf24]Abhi koi compiled .EXE artifact nahi hai — pehle 'Push & Build APK + EXE on GitHub' dabao.[/color]"
+                    else:
+                        msg = "[color=fbbf24]Abhi koi compiled .APK ready nahi hai — naya APK banane ke liye 'Push & Build APK + EXE on GitHub' button dabao (Download button kabhi build restart nahi karega).[/color]"
+                    Clock.schedule_once(lambda _dt: setattr(self.gh_log, "text", msg), 0)
+                    return
+
+                dl_url = f"https://api.github.com/repos/{owner}/{repo}/actions/artifacts/{match_art['id']}/zip"
+                zip_bytes = self._gh_download_artifact_bytes(dl_url, token)
+                dl_dir = self._get_downloads_folder()
+                os.makedirs(dl_dir, exist_ok=True)
+                tmp_zip = os.path.join(self._get_data_dir(), f"_tmp_{target}_artifact.zip")
+                with open(tmp_zip, "wb") as zfh:
+                    zfh.write(zip_bytes)
+
+                extracted_path = None
+                ext = f".{target.lower()}"
+                with zipfile.ZipFile(tmp_zip, "r") as zf:
+                    members = [m for m in zf.namelist() if m.lower().endswith(ext)]
+                    if members:
+                        chosen = members[0]
+                        fname = os.path.basename(chosen) or f"NeonMobile.{target.lower()}"
+                        dest = os.path.join(dl_dir, fname)
+                        with zf.open(chosen) as src_f, open(dest, "wb") as dst_f:
+                            shutil.copyfileobj(src_f, dst_f)
+                        extracted_path = dest
+                try:
+                    os.remove(tmp_zip)
+                except Exception:
+                    pass
+
+                if extracted_path and os.path.exists(extracted_path):
+                    sz_mb = round(os.path.getsize(extracted_path) / (1024 * 1024), 2)
+                    def _ok(_dt):
+                        msg = (
+                            f"[color=34d399][b]✓ {target.upper()} Downloaded Directly ({sz_mb} MB)![/b][/color]\n"
+                            f"[color=e2e8f0]Saved to: {escape_markup(extracted_path)}[/color]"
+                        )
+                        self.gh_log.text = msg
+                        if hasattr(self, "studio_status_lbl"):
+                            self.studio_status_lbl.text = msg
+                        if self.audio_enabled:
+                            self.voice_bridge.speak(f"Harish, aapki {target.upper()} file Downloads folder me save ho gayi hai!")
+                    Clock.schedule_once(_ok, 0)
+                else:
+                    Clock.schedule_once(
+                        lambda _dt: setattr(
+                            self.gh_log,
+                            "text",
+                            f"[color=fbbf24]Artifact ZIP me .{target} file nahi mili.[/color]",
+                        ),
+                        0,
+                    )
+            except Exception as err:
+                Clock.schedule_once(
+                    lambda _dt, e=str(err): setattr(
+                        self.gh_log,
+                        "text",
+                        f"[color=f87171]Direct Download Error: {escape_markup(e)}[/color]",
+                    ),
+                    0,
+                )
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _gh_download_exe_action(self):
+        self._gh_download_compiled_artifact(target="exe")
 
     def _gh_open_web_ci(self):
         webbrowser.open("https://ais-pre-ccf5jvawenmhsjix56rckx-803295381828.asia-southeast1.run.app/?tab=github")
@@ -3792,11 +4401,11 @@ class NeonProMobileSuite(BoxLayout):
 
     def _gh_cancel_stuck_runs(self):
         token = self.gh_token_input.text.strip() or self.github_token
-        repo = self.gh_repo_input.text.strip() or "neon-pro-harish"
+        repo = self.gh_repo_input.text.strip() or self.github_repo or "neon-pro-harish"
         if not token:
             self.gh_log.text = "[color=fbbf24]Pehle 'Get Token' dabakar GitHub Token save karein.[/color]"
             return
-        self.gh_log.text = "[color=fbbf24]Cancelling stuck in_progress builds...[/color]"
+        self.gh_log.text = "[color=fbbf24]Killing all active & duplicate GitHub builds...[/color]"
 
         def _worker():
             code, user = self._gh_get("https://api.github.com/user", token)
@@ -3805,21 +4414,27 @@ class NeonProMobileSuite(BoxLayout):
                 return
             owner = user.get("login", "")
             self._gh_owner_cache = owner
-            rc, runs_data = self._gh_get(f"https://api.github.com/repos/{owner}/{repo}/actions/runs?per_page=8", token)
+            rc, runs_data = self._gh_get(f"https://api.github.com/repos/{owner}/{repo}/actions/runs?per_page=30", token)
             cancelled = []
             if rc == 200 and isinstance(runs_data, dict):
                 for r in runs_data.get("workflow_runs", []):
-                    if r.get("status") in ("in_progress", "queued", "waiting"):
+                    if r.get("status") in ("in_progress", "queued", "waiting", "pending", "requested"):
                         rid = r.get("id")
                         cc, _ = self._gh_req("POST", f"https://api.github.com/repos/{owner}/{repo}/actions/runs/{rid}/cancel", token)
                         if cc not in (200, 202):
                             cc, _ = self._gh_req("POST", f"https://api.github.com/repos/{owner}/{repo}/actions/runs/{rid}/force-cancel", token)
                         cancelled.append(f"#{rid} ({cc})")
-            if cancelled:
-                msg = f"[color=34d399][b]✓ Cancelled {len(cancelled)} stuck build(s):[/b] {', '.join(cancelled)}[/color]\n[color=cbd5e1]Ab ek baar 'Download APK File' dabao taaki fresh clean build start ho![/color]"
-            else:
-                msg = "[color=38bdf8]Koi in_progress build nahi mila — ab naya build start kar sakte ho.[/color]"
-            Clock.schedule_once(lambda _dt: setattr(self.gh_log, "text", msg), 0)
+            def _done(_dt):
+                self._stop_build_progress_poller()
+                self._set_execution_progress(False, 0, 0)
+                if cancelled:
+                    self.gh_log.text = (
+                        f"[color=34d399][b]✓ Killed {len(cancelled)} active/duplicate build(s):[/b] {', '.join(cancelled)}[/color]\n"
+                        "[color=cbd5e1]Queue saaf ho gayi hai! Ab naya build start kar sakte ho.[/color]"
+                    )
+                else:
+                    self.gh_log.text = "[color=38bdf8]Koi active/duplicate build nahi mila.[/color]"
+            Clock.schedule_once(_done, 0)
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -4061,6 +4676,9 @@ class NeonProMobileSuite(BoxLayout):
                 if hasattr(self, "gh_exe_btn"):
                     self.gh_exe_btn.disabled = False
                 self.gh_log.text = msg
+                if pushed_ok and not errors:
+                    self._set_execution_progress(True, exe_pct=8, apk_pct=8)
+                    self._start_build_progress_poller(owner, repo, token)
             Clock.schedule_once(_done, 0)
 
             # Live background poll for autonomous chat cards so Harish gets ready notification automatically
@@ -4078,18 +4696,18 @@ class NeonProMobileSuite(BoxLayout):
                     if exe_ready and not announced_exe:
                         announced_exe = True
                         _set_chat_status(
-                            "[color=34d399]✓ Windows .EXE compiled! Android .APK still compiling... Tap 'Open Downloads' anytime.[/color]"
+                            "[color=34d399]✓ Windows .EXE compiled! Android .APK still compiling... Tap 'Download EXE File' anytime.[/color]"
                         )
                     if apk_ready and exe_ready:
                         _set_chat_status(
-                            f"[b][color=34d399]✓ BOTH Android .APK & Windows .EXE Ready! Tap 'Open Downloads' -> https://github.com/{owner}/{repo}/actions[/color][/b]"
+                            f"[b][color=34d399]✓ BOTH Android .APK & Windows .EXE Ready! Tap 'Download APK File' or 'Download EXE File'.[/color][/b]"
                         )
                         if self.audio_enabled:
                             Clock.schedule_once(lambda _dt: self.voice_bridge.speak("Harish, aapke app ki APK aur EXE files dono ban ke ready ho gayi hain!"), 0)
                         break
                     if top_run and top_run.get("status") == "completed":
                         _set_chat_status(
-                            f"[color={'34d399' if r_stat == 'success' else 'fbbf24'}]Build finished ({r_stat}). Tap 'Open Downloads' -> https://github.com/{owner}/{repo}/actions[/color]"
+                            f"[color={'34d399' if r_stat == 'success' else 'fbbf24'}]Build finished ({r_stat}). Tap 'GitHub CI' to view downloads.[/color]"
                         )
                         break
 
