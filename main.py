@@ -173,15 +173,15 @@ CONFIG_FILE = "neon_pro_config.json"
 WEB_COCKPIT_URL = "https://ais-pre-ccf5jvawenmhsjix56rckx-803295381828.asia-southeast1.run.app"
 DEFAULT_SYSTEM_PROMPT = (
     "You are NEON PRO, Harish's autonomous, bilingual (Hindi / English / Hinglish) "
-    "personal AI companion, voice assistant, and mobile app builder. "
+    "personal AI companion, voice assistant, and full-stack mobile/Windows app builder. "
     "Core Behavioral Rules: "
     "1. Talk naturally, warmly, and directly like a close Indian friend—clear, simple, and user-friendly. Never sound robotic or stiff. "
     "2. NEVER recite system status reports, battery levels, connection logs, or technical diagnostics unless explicitly requested. "
     "3. Keep conversational replies short and helpful. Match Hindi, English, or Hinglish effortlessly. "
-    "4. ZERO COPY-PASTE & NO PC/COLAB RULE: NEON PRO has a built-in All-in-One App Builder and 1-Tap 'Build APK' button right on Harish's phone. "
-    "NEVER tell Harish 'main chat pe APK nahi bhej sakta, PC ya Google Colab pe Buildozer chalao' and NEVER ask him to copy-paste code. "
-    "When Harish asks for any Android app or APK, output complete zero-placeholder Python/Kivy code inside one triple-backtick python block "
-    "(which auto-syncs into App Builder automatically) and tell him in one friendly line to tap 'Build APK'."
+    "4. TRUE AUTONOMOUS EXECUTION (NO MANUAL STEPS): NEON PRO has full control over App Builder and Cloud CI (Android .APK + Windows .EXE). "
+    "NEVER tell Harish 'main chat pe APK nahi bhej sakta, PC ya Google Colab pe Buildozer chalao', NEVER ask him to run Buildozer/PyInstaller manually, and NEVER ask him to copy-paste code. "
+    "When Harish asks for any app or software, output complete zero-placeholder Python/Kivy code inside one triple-backtick python block "
+    "AND confirm in 1 friendly line that autonomous compilation into Android (.APK) and Windows (.EXE) has started automatically right below."
 )
 
 
@@ -399,7 +399,7 @@ class AndroidVoiceBridge:
             return
         self._cancel_poll()
         self.is_speaking = False
-        Clock.schedule_once(lambda _dt: self.on_speak_done(), 0.05)
+        Clock.schedule_once(lambda _dt: self.on_speak_done(), 0.25)
 
     def _speak_native_with_retry(self, clean_text, gen):
         if platform != "android":
@@ -762,6 +762,22 @@ class AndroidVoiceBridge:
                 intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, lang_tag)
                 intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, True)
                 intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+                try:
+                    JavaLong = autoclass("java.lang.Long")
+                    intent.putExtra(
+                        RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS,
+                        JavaLong(2200),
+                    )
+                    intent.putExtra(
+                        RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS,
+                        JavaLong(1800),
+                    )
+                    intent.putExtra(
+                        RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS,
+                        JavaLong(1500),
+                    )
+                except BaseException:
+                    pass
 
                 self.is_listening = True
                 Clock.schedule_once(lambda _dt: self.on_status("MIC ON • Bolo Harish..."), 0)
@@ -901,6 +917,7 @@ class NeonProMobileSuite(BoxLayout):
         self.active_tab = "console"
         self.tab_buttons = {}
         self._pending_busy = False
+        self._tts_cooldown_ev = None
 
         self.voice_bridge = AndroidVoiceBridge(
             status_callback=self._update_voice_banner,
@@ -1233,7 +1250,34 @@ class NeonProMobileSuite(BoxLayout):
         self._save_config()
         self._refresh_header_state()
 
+    def _cancel_tts_cooldown(self):
+        ev = getattr(self, "_tts_cooldown_ev", None)
+        if ev is not None:
+            try:
+                ev.cancel()
+            except Exception:
+                pass
+            self._tts_cooldown_ev = None
+
+    def _schedule_hands_free_listen(self, delay_sec=1.6):
+        self._cancel_tts_cooldown()
+        if not (self.hands_free_mode and not self._pending_busy and self.active_tab == "console"):
+            return
+        self._update_voice_banner("Pause 1.6s... Mic taiyar ho raha hai")
+        def _open_mic(_dt):
+            self._tts_cooldown_ev = None
+            if (
+                self.hands_free_mode
+                and not self._pending_busy
+                and not self.voice_bridge.is_speaking
+                and not self.voice_bridge.is_listening
+                and self.active_tab == "console"
+            ):
+                self.voice_bridge.start_listening()
+        self._tts_cooldown_ev = Clock.schedule_once(_open_mic, delay_sec)
+
     def _toggle_hands_free(self, *_args):
+        self._cancel_tts_cooldown()
         self.hands_free_mode = not self.hands_free_mode
         self._save_config()
         self._refresh_header_state()
@@ -1244,13 +1288,14 @@ class NeonProMobileSuite(BoxLayout):
             self._update_voice_banner("VOICE-FIRST INTELLIGENCE • Ready")
 
     def _barge_in_now(self, *_args):
+        self._cancel_tts_cooldown()
         self.voice_bridge.stop_speaking()
-        self.voice_bridge.start_listening()
+        Clock.schedule_once(lambda _dt: self.voice_bridge.start_listening(), 0.25)
 
     def _on_tts_finished(self):
         self._update_voice_banner(f"VOICE-FIRST INTELLIGENCE • Persona: {self.voice_persona}")
         if self.hands_free_mode and not self._pending_busy and self.active_tab == "console":
-            Clock.schedule_once(lambda _dt: self.voice_bridge.start_listening(), 0.35)
+            self._schedule_hands_free_listen(1.6)
 
     def _build_screens(self):
         self.screen_manager = ScreenManager(transition=NoTransition())
@@ -1831,9 +1876,9 @@ class NeonProMobileSuite(BoxLayout):
 
     def _extract_python_code(self, text_val):
         m = re.search(r"```(?:python|py)?\s*\n([\s\S]*?)```", text_val, re.IGNORECASE)
-        if m and len(m.group(1).strip()) > 60:
+        if m and len(m.group(1).strip()) > 40:
             return m.group(1).strip() + "\n"
-        if "from kivy" in text_val and "def build(" in text_val and len(text_val) > 120:
+        if "from kivy" in text_val and "def build(" in text_val and len(text_val) > 100:
             lines = [ln for ln in text_val.splitlines() if not ln.strip().startswith("```")]
             return "\n".join(lines).strip() + "\n"
         return None
@@ -1853,12 +1898,13 @@ class NeonProMobileSuite(BoxLayout):
         if not prompt or self._pending_busy:
             return
 
+        self._cancel_tts_cooldown()
         self.voice_bridge.stop_speaking()
         if not preset_prompt:
             self.chat_input.text = ""
         self._add_message_card("user", prompt)
 
-        # Auto-detect pasted Python/Kivy code in Chat and sync cleanly with zero copy-paste!
+        # Auto-detect pasted Python/Kivy code in Chat and launch autonomous APK + EXE build!
         pasted_py = self._extract_python_code(prompt)
         if pasted_py:
             self._sync_autonomous_code(pasted_py, "python")
@@ -1868,12 +1914,13 @@ class NeonProMobileSuite(BoxLayout):
             except SyntaxError as s_err:
                 ast_note = f"Line {s_err.lineno} par ek chhota syntax issue hai — 'App Builder -> Check Code' dabao."
             ok_reply = (
-                f"Badhiya Harish! Maine aapka app code seedha App Builder (main.py) me save kar diya hai — copy-paste ki zaroorat nahi! {ast_note}\n\n"
+                f"Badhiya Harish! Maine aapka code App Builder me save karke autonomous .APK + .EXE pipeline start kar di hai! {ast_note}\n\n"
                 f"```python\n{pasted_py.strip()}\n```"
             )
-            self._add_message_card("assistant", ok_reply, model_tag="Auto-Sync")
+            self._add_message_card("assistant", ok_reply, model_tag="Auto-Build")
+            self._start_autonomous_build_from_chat("Custom Pasted App")
             if self.audio_enabled:
-                self.voice_bridge.speak("Harish, aapka code App Builder me save ho gaya hai. Build APK dabao.")
+                self.voice_bridge.speak("Harish, aapka code save karke autonomous APK aur EXE build shuru kar diya hai.")
             return
 
         if self._is_self_test_intent(prompt):
@@ -1896,29 +1943,33 @@ class NeonProMobileSuite(BoxLayout):
             daemon=True,
         ).start()
 
-    def _http_get_json(self, url):
+    def _http_get_json(self, url, timeout=20):
         _ssl_ctx, req_verify = _build_ssl_context()
         if requests is not None:
             try:
                 try:
-                    r = requests.get(url, timeout=15, verify=req_verify)
+                    r = requests.get(url, timeout=(10, timeout), verify=req_verify)
                 except Exception as r_err:
                     if _is_ssl_exception(r_err) and req_verify is not False:
                         _activate_unverified_ssl_fallback()
-                        r = requests.get(url, timeout=15, verify=False)
+                        r = requests.get(url, timeout=(10, timeout), verify=False)
+                    elif "timed out" in str(r_err).lower() or "timeout" in str(r_err).lower():
+                        raise TimeoutError(str(r_err))
                     else:
                         raise
                 return r.status_code, (r.json() if r.status_code == 200 else r.text)
+            except TimeoutError:
+                raise
             except Exception as outer_err:
-                if not _is_ssl_exception(outer_err):
-                    pass
+                if "timed out" in str(outer_err).lower() or "timeout" in str(outer_err).lower():
+                    raise TimeoutError(str(outer_err))
         req = urllib.request.Request(url, method="GET")
-        code, txt = _urlopen_with_ssl_retry(req, timeout=15)
+        code, txt = _urlopen_with_ssl_retry(req, timeout=timeout)
         if code == 200:
             return code, json.loads(txt)
         return code, txt
 
-    def _http_post_json(self, url, payload, headers=None, timeout=30):
+    def _http_post_json(self, url, payload, headers=None, timeout=45):
         hdrs = {"Content-Type": "application/json"}
         if headers:
             hdrs.update(headers)
@@ -1926,11 +1977,13 @@ class NeonProMobileSuite(BoxLayout):
         if requests is not None:
             try:
                 try:
-                    resp = requests.post(url, json=payload, headers=hdrs, timeout=timeout, verify=req_verify)
+                    resp = requests.post(url, json=payload, headers=hdrs, timeout=(12, timeout), verify=req_verify)
                 except Exception as r_err:
                     if _is_ssl_exception(r_err) and req_verify is not False:
                         _activate_unverified_ssl_fallback()
-                        resp = requests.post(url, json=payload, headers=hdrs, timeout=timeout, verify=False)
+                        resp = requests.post(url, json=payload, headers=hdrs, timeout=(12, timeout), verify=False)
+                    elif "timed out" in str(r_err).lower() or "timeout" in str(r_err).lower():
+                        raise TimeoutError(str(r_err))
                     else:
                         raise
                 data = None
@@ -1940,8 +1993,11 @@ class NeonProMobileSuite(BoxLayout):
                     except Exception:
                         data = None
                 return resp.status_code, resp.text, data
-            except Exception:
-                pass
+            except TimeoutError:
+                raise
+            except Exception as outer_err:
+                if "timed out" in str(outer_err).lower() or "timeout" in str(outer_err).lower():
+                    raise TimeoutError(str(outer_err))
         req = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
@@ -1979,7 +2035,7 @@ class NeonProMobileSuite(BoxLayout):
         return self.discovered_models
 
     def _call_gemini_rest(self, contents, system_prompt=DEFAULT_SYSTEM_PROMPT, prefer_pro=False):
-        chain = [self.selected_model, "gemini-4-hydrogen", "gemini-3.1-flash-lite", "gemini-4-argon"]
+        chain = [self.selected_model, "gemini-3.1-flash-lite", "gemini-4-hydrogen", "gemini-4-argon"]
         if prefer_pro:
             chain.insert(0, "gemini-4-carbon")
         if self.discovered_models:
@@ -1994,14 +2050,14 @@ class NeonProMobileSuite(BoxLayout):
 
         def _try_models(model_list):
             nonlocal last_err
-            had_404 = False
+            needs_discovery = False
             for model_name in model_list:
                 url = (
                     f"https://generativelanguage.googleapis.com/v1beta/models/"
                     f"{model_name}:generateContent?key={self.api_key}"
                 )
                 try:
-                    status_code, raw_text, data = self._http_post_json(url, payload, timeout=30)
+                    status_code, raw_text, data = self._http_post_json(url, payload, timeout=45)
                     if status_code == 200 and data:
                         cands = data.get("candidates") or []
                         if cands:
@@ -2010,21 +2066,22 @@ class NeonProMobileSuite(BoxLayout):
                             if txt:
                                 return txt, model_name, False
                     else:
-                        if status_code == 404:
-                            had_404 = True
+                        if status_code in (404, 503, 504):
+                            needs_discovery = True
                         last_err = f"HTTP {status_code}: {raw_text[:180]}"
                         if status_code not in (404, 429, 500, 502, 503, 504):
                             break
                 except Exception as exc:
+                    needs_discovery = True
                     last_err = str(exc)
-            return None, None, had_404
+            return None, None, needs_discovery
 
-        txt, used, saw_404 = _try_models(dedup_chain)
+        txt, used, should_discover = _try_models(dedup_chain)
         if txt:
             return txt, used, None
 
-        # Dynamic model auto-discovery fallback if external user key hit 404
-        if saw_404:
+        # Dynamic model auto-discovery fallback on 404 or timeout
+        if should_discover:
             fresh = [m for m in self._discover_available_models() if m not in dedup_chain]
             if fresh:
                 txt, used, _ = _try_models(fresh)
@@ -2032,6 +2089,103 @@ class NeonProMobileSuite(BoxLayout):
                     return txt, used, None
 
         return None, None, last_err
+
+    def _add_auto_build_status_card(self, title="Autonomous APK & EXE Pipeline", needs_token=False, exe_zip_path=None):
+        box = BoxLayout(orientation="vertical", size_hint_y=None, padding=dp(10), spacing=dp(6))
+        box.bind(minimum_height=box.setter("height"))
+        border = (0.95, 0.65, 0.15, 0.72) if needs_token else (0.14, 0.88, 0.58, 0.75)
+        bg = (0.09, 0.06, 0.02, 1.0) if needs_token else (0.03, 0.09, 0.07, 1.0)
+        style_card(box, bg, border, radius_dp=12)
+
+        hdr = AutoLabel(
+            text=f"[b][color={'fbbf24' if needs_token else '34d399'}]{escape_markup(title)}[/color][/b]",
+            font_size=sp(11),
+        )
+        box.add_widget(hdr)
+
+        status_lbl = AutoLabel(
+            text=(
+                "[color=e2e8f0]Code synced to App Builder & Windows EXE Zip ready! Cloud .APK + .EXE compile ke liye 1-baar GitHub Token connect karein.[/color]"
+                if needs_token
+                else "[color=38bdf8]Step 1/3: Synced code • Step 2/3: Auto-pushing to GitHub CI for Android .APK + Windows .EXE...[/color]"
+            ),
+            font_size=sp(11),
+        )
+        box.add_widget(status_lbl)
+
+        btn_row = BoxLayout(size_hint_y=None, height=dp(34), spacing=dp(6))
+        if needs_token:
+            tok_btn = make_button(
+                "Connect Token & Auto-Build",
+                (0.04, 0.50, 0.36, 1.0),
+                (0.16, 0.90, 0.60, 0.85),
+                radius_dp=8,
+                font_sp=10,
+            )
+            tok_btn.bind(
+                on_release=lambda *_: self._open_github_token_modal(
+                    on_verified=lambda: self._start_autonomous_build_from_chat(title)
+                )
+            )
+            btn_row.add_widget(tok_btn)
+
+            if exe_zip_path:
+                zip_btn = make_button(
+                    "Open GitHub CI",
+                    (0.32, 0.14, 0.56, 1.0),
+                    (0.68, 0.36, 0.96, 0.8),
+                    radius_dp=8,
+                    font_sp=10,
+                    size_hint_x=0.7,
+                )
+                zip_btn.bind(on_release=lambda *_: self._switch_tab("github"))
+                btn_row.add_widget(zip_btn)
+        else:
+            dl_btn = make_button(
+                "Open Downloads",
+                (0.04, 0.45, 0.32, 1.0),
+                (0.14, 0.88, 0.58, 0.8),
+                radius_dp=8,
+                font_sp=10,
+            )
+            dl_btn.bind(on_release=lambda *_: self._gh_open_actions_browser())
+            btn_row.add_widget(dl_btn)
+
+            ci_btn = make_button(
+                "GitHub CI",
+                (0.32, 0.14, 0.56, 1.0),
+                (0.68, 0.36, 0.96, 0.8),
+                radius_dp=8,
+                font_sp=10,
+                size_hint_x=0.65,
+            )
+            ci_btn.bind(on_release=lambda *_: self._switch_tab("github"))
+            btn_row.add_widget(ci_btn)
+
+        box.add_widget(btn_row)
+        self.chat_list.add_widget(box)
+        Clock.schedule_once(lambda _dt: setattr(self.chat_scroll, "scroll_y", 0), 0.08)
+        return status_lbl
+
+    def _start_autonomous_build_from_chat(self, app_label="Autonomous App"):
+        saved_zip = self._export_exe_bundle()
+        if not self.github_token:
+            self._add_auto_build_status_card(
+                title=f"Setup Needed • {app_label}",
+                needs_token=True,
+                exe_zip_path=saved_zip,
+            )
+            return
+        status_lbl = self._add_auto_build_status_card(
+            title=f"Auto-Building APK + EXE • {app_label}",
+            needs_token=False,
+            exe_zip_path=saved_zip,
+        )
+        self._gh_push_studio_app(
+            target="apk",
+            local_exe_zip=saved_zip,
+            chat_status_lbl=status_lbl,
+        )
 
     def _run_gemini_chat(self, prompt):
         lang_hint = ""
@@ -2041,8 +2195,12 @@ class NeonProMobileSuite(BoxLayout):
             lang_hint = " Always reply in crisp conversational English."
         if self.hands_free_mode:
             lang_hint += " Hands-Free voice mode is ON: keep conversational replies concise and natural."
-        if self._is_build_intent(prompt):
-            lang_hint += " Harish wants you to autonomously build/develop this software cleanly: include complete runnable zero-placeholder code in triple backticks so it auto-syncs into App Studio."
+        build_requested = self._is_build_intent(prompt)
+        if build_requested:
+            lang_hint += (
+                " Harish wants full autonomous output (.APK and .EXE). Output complete zero-placeholder Python/Kivy code in one triple-backtick python block "
+                "and confirm in 1 short sentence that autonomous compilation into Android .APK and Windows .EXE has started automatically (never tell him to manually compile or copy-paste)."
+            )
 
         self.history.append({"role": "user", "parts": [{"text": prompt}]})
         recent = self.history[-10:]
@@ -2059,10 +2217,15 @@ class NeonProMobileSuite(BoxLayout):
             if reply_text:
                 self.history.append({"role": "model", "parts": [{"text": reply_text}]})
                 self._add_message_card("assistant", reply_text, model_tag=used_model)
+                extracted = self._extract_python_code(reply_text)
+                if build_requested or extracted:
+                    if extracted:
+                        self._sync_autonomous_code(extracted, "python")
+                    self._start_autonomous_build_from_chat(prompt[:32])
                 if self.audio_enabled:
                     self.voice_bridge.speak(reply_text)
                 elif self.hands_free_mode:
-                    Clock.schedule_once(lambda _d: self.voice_bridge.start_listening(), 0.4)
+                    self._schedule_hands_free_listen(1.6)
             else:
                 low_err = str(err or "").lower()
                 if "400" in low_err or "401" in low_err or "403" in low_err or "api key" in low_err:
@@ -2116,54 +2279,64 @@ class NeonProMobileSuite(BoxLayout):
                 errors_found.append(err_s)
                 checks.append(f"[FAIL] Network/SSL: {ssl_exc}")
 
-            # 2. Gemini API Key & Active Model Live Probe + Auto-Failover
+            # 2. Gemini API Key & Active Model Live Probe + Timeout/Error Auto-Failover
             api_ok = False
             if not self.api_key:
                 errors_found.append("Gemini API Key set nahi hai")
                 checks.append("[FAIL] Gemini API Key: Missing (Settings -> Set Key me dalein)")
             else:
-                probe_payload = {"contents": [{"role": "user", "parts": [{"text": "Reply OK"}]}]}
+                probe_payload = {
+                    "contents": [{"role": "user", "parts": [{"text": "Reply OK"}]}],
+                    "generationConfig": {"maxOutputTokens": 12, "temperature": 0},
+                }
                 probe_url = (
                     f"https://generativelanguage.googleapis.com/v1beta/models/"
                     f"{self.selected_model}:generateContent?key={self.api_key}"
                 )
+                first_err_label = ""
                 try:
-                    sc, rtxt, _pdata = self._http_post_json(probe_url, probe_payload, timeout=12)
+                    sc, rtxt, _pdata = self._http_post_json(probe_url, probe_payload, timeout=25)
                     if sc == 200:
                         api_ok = True
                         checks.append(f"[PASS] Active Model: {self.selected_model} working cleanly")
                     else:
-                        if auto_fix and sc in (404, 429, 500, 502, 503):
-                            self.discovered_models = []
-                            discovered = self._discover_available_models()
-                            candidates = list(dict.fromkeys(["gemini-4-hydrogen", "gemini-3.1-flash-lite", "gemini-4-argon"] + discovered))
-                            recovered = None
-                            for cand in candidates:
-                                if cand == self.selected_model:
-                                    continue
-                                try:
-                                    curl = f"https://generativelanguage.googleapis.com/v1beta/models/{cand}:generateContent?key={self.api_key}"
-                                    csc, _cr, _cd = self._http_post_json(curl, probe_payload, timeout=10)
-                                    if csc == 200:
-                                        recovered = cand
-                                        break
-                                except Exception:
-                                    pass
-                            if recovered:
-                                old_m = self.selected_model
-                                self.selected_model = recovered
-                                api_ok = True
-                                healed_notes.append(f"Model {old_m} -> {recovered}")
-                                checks.append(f"[FIXED] Active Model: {old_m} failed (HTTP {sc}) -> auto-switched to {recovered}")
-                            else:
-                                errors_found.append(f"API HTTP {sc}: {rtxt[:120]}")
-                                checks.append(f"[FAIL] Active Model: HTTP {sc} ({rtxt[:100]})")
+                        if auto_fix and sc in (404, 429, 500, 502, 503, 504):
+                            first_err_label = f"HTTP {sc}"
                         else:
                             errors_found.append(f"API Key/Auth HTTP {sc}: {rtxt[:120]}")
                             checks.append(f"[FAIL] Gemini API Auth: HTTP {sc} ({rtxt[:100]})")
                 except Exception as api_exc:
-                    errors_found.append(f"Gemini API error: {api_exc}")
-                    checks.append(f"[FAIL] Gemini API: {api_exc}")
+                    first_err_label = str(api_exc)
+
+                if not api_ok and first_err_label and (auto_fix or "timed out" in first_err_label.lower() or "timeout" in first_err_label.lower()):
+                    if auto_fix:
+                        self.discovered_models = []
+                        discovered = self._discover_available_models()
+                        candidates = list(dict.fromkeys(["gemini-3.1-flash-lite", "gemini-4-hydrogen", "gemini-4-argon"] + discovered))
+                        recovered = None
+                        for cand in candidates:
+                            if cand == self.selected_model:
+                                continue
+                            try:
+                                curl = f"https://generativelanguage.googleapis.com/v1beta/models/{cand}:generateContent?key={self.api_key}"
+                                csc, _cr, _cd = self._http_post_json(curl, probe_payload, timeout=20)
+                                if csc == 200:
+                                    recovered = cand
+                                    break
+                            except Exception:
+                                pass
+                        if recovered:
+                            old_m = self.selected_model
+                            self.selected_model = recovered
+                            api_ok = True
+                            healed_notes.append(f"Model {old_m} -> {recovered}")
+                            checks.append(f"[FIXED] Active Model: {old_m} ({first_err_label}) -> auto-switched to {recovered}")
+                        else:
+                            errors_found.append(f"Gemini API: {first_err_label}")
+                            checks.append(f"[FAIL] Gemini API: {first_err_label}")
+                    else:
+                        errors_found.append(f"Gemini API: {first_err_label}")
+                        checks.append(f"[FAIL] Gemini API: {first_err_label}")
 
             # 3. Storage Read/Write Self-Test
             try:
@@ -2340,31 +2513,45 @@ class NeonProMobileSuite(BoxLayout):
             "  build_exe:\n"
             "    name: Build Windows Standalone EXE\n"
             "    runs-on: windows-latest\n"
-            "    timeout-minutes: 25\n"
+            "    timeout-minutes: 15\n"
             "    env:\n"
             "      PIP_NO_INPUT: '1'\n"
             "      PIP_DISABLE_PIP_VERSION_CHECK: '1'\n"
             "      KIVY_NO_ARGS: '1'\n"
             "      KIVY_NO_CONSOLELOG: '1'\n"
             "      KIVY_NO_FILELOG: '1'\n"
+            "      KIVY_NO_CONFIG: '1'\n"
+            "      KIVY_LOG_MODE: 'PYTHON'\n"
             "      PYTHONUNBUFFERED: '1'\n"
             "    steps:\n"
             "      - uses: actions/checkout@v7\n"
             "      - name: Speed Up Windows Build\n"
             "        shell: pwsh\n"
             "        run: |\n"
-            '          try { Add-MpPreference -ExclusionPath $env:GITHUB_WORKSPACE, $env:LOCALAPPDATA, $env:TEMP -ErrorAction SilentlyContinue } catch {}\n'
+            '          try { Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue } catch {}\n'
+            '          try { Add-MpPreference -ExclusionPath $env:GITHUB_WORKSPACE, $env:LOCALAPPDATA, $env:TEMP, "C:\hostedtoolcache" -ErrorAction SilentlyContinue } catch {}\n'
             "      - uses: actions/setup-python@v7\n"
             "        with:\n"
             "          python-version: '3.11'\n"
             "      - name: Install Windows Build Deps\n"
+            "        shell: pwsh\n"
             "        run: |\n"
-            '          python -m pip install --prefer-binary --no-input "kivy==2.3.2" requests certifi urllib3 pyinstaller\n'
-            '          python -c "import kivy, PyInstaller; print(kivy.__version__, PyInstaller.__version__)"\n'
-            "          pyinstaller --version\n"
-            "      - name: Compile Windows EXE\n"
+            "          python -m venv .venv_win\n"
+            "          .\.venv_win\Scripts\python.exe -m pip install --upgrade pip\n"
+            '          .\.venv_win\Scripts\python.exe -m pip install --prefer-binary --no-input "kivy==2.3.2" requests certifi urllib3 pyinstaller\n'
+            '          .\.venv_win\Scripts\python.exe -c "import kivy, PyInstaller; print(kivy.__version__, PyInstaller.__version__)"\n'
+            "      - name: Compile Standalone Windows EXE\n"
+            "        timeout-minutes: 8\n"
+            "        shell: pwsh\n"
+            "        env:\n"
+            "          SDL_VIDEODRIVER: 'dummy'\n"
+            "          SDL_AUDIODRIVER: 'dummy'\n"
             "        run: |\n"
-            '          pyinstaller --noconfirm --noconsole --onefile --noupx --log-level=INFO --exclude-module tkinter --exclude-module unittest --exclude-module test --exclude-module pydoc --name "NeonMobile_Windows" main.py\n'
+            '          .\.venv_win\Scripts\pyinstaller.exe --clean --noconfirm --noconsole --onefile --noupx --log-level=INFO --collect-data certifi --exclude-module tkinter --exclude-module unittest --exclude-module test --exclude-module pydoc --exclude-module doctest --exclude-module lib2to3 --exclude-module kivy.tests --exclude-module docutils --exclude-module pygments --exclude-module numpy --exclude-module scipy --exclude-module matplotlib --exclude-module PIL --exclude-module cv2 --exclude-module enchant --exclude-module twisted --exclude-module pygame --name "NeonMobile_Windows" main.py\n'
+            "      - name: Verify Windows EXE Output\n"
+            "        shell: pwsh\n"
+            "        run: |\n"
+            "          Get-ChildItem dist\\*.exe\n"
             "      - name: Upload Windows EXE\n"
             "        uses: actions/upload-artifact@v7\n"
             "        with:\n"
@@ -3364,7 +3551,7 @@ class NeonProMobileSuite(BoxLayout):
             self.gh_token_status_lbl.text = ok_msg
         return True
 
-    def _open_github_token_modal(self):
+    def _open_github_token_modal(self, on_verified=None):
         modal = ModalView(size_hint=(0.94, None), height=dp(440), background_color=(0, 0, 0, 0.80))
         box = BoxLayout(orientation="vertical", padding=dp(14), spacing=dp(8))
         style_card(box, (0.04, 0.06, 0.12, 1.0), (0.95, 0.68, 0.18, 0.80), radius_dp=16, border_width=1.4)
@@ -3469,7 +3656,11 @@ class NeonProMobileSuite(BoxLayout):
                         if hasattr(self, "gh_token_status_lbl"):
                             self.gh_token_status_lbl.text = f"[color=34d399]✓ Connected @{user['login']} — Saved Forever![/color]"
                         status_lbl.text = f"[color=34d399]✓ Verified @{user['login']}! Ab sabhi apps me khud save rahega.[/color]"
-                        Clock.schedule_once(lambda _dt2: modal.dismiss(), 1.1)
+                        def _after_dismiss(_dt2):
+                            modal.dismiss()
+                            if on_verified is not None:
+                                on_verified()
+                        Clock.schedule_once(_after_dismiss, 0.9)
                     else:
                         status_lbl.text = f"[color=fbbf24]Token saved locally (GitHub status {code}) — repo + workflow scope check karein.[/color]"
                 Clock.schedule_once(_vdone, 0)
@@ -3702,7 +3893,7 @@ class NeonProMobileSuite(BoxLayout):
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _gh_push_studio_app(self, target="apk", local_exe_zip=None):
+    def _gh_push_studio_app(self, target="apk", local_exe_zip=None, chat_status_lbl=None):
         self._save_active_studio_buffer()
         token = self.gh_token_input.text.strip() or self.github_token
         repo = self.gh_repo_input.text.strip() or "neon-pro-harish"
@@ -3719,6 +3910,10 @@ class NeonProMobileSuite(BoxLayout):
         label_mode = "Windows .EXE + Android .APK" if target == "exe" else "Android .APK + Windows .EXE"
         self.gh_log.text = f"[color=38bdf8]Pushing in 1 atomic commit & starting {label_mode} build...[/color]"
         files_bundle = dict(self.studio_files)
+
+        def _set_chat_status(txt):
+            if chat_status_lbl is not None:
+                Clock.schedule_once(lambda _dt: setattr(chat_status_lbl, "text", txt), 0)
 
         def _worker():
             code, user = self._gh_get("https://api.github.com/user", token)
@@ -3852,17 +4047,51 @@ class NeonProMobileSuite(BoxLayout):
                     f"Tap 'Check Status' or 'Open Downloads':\n"
                     f"https://github.com/{owner}/{repo}/actions[/color]{extra_exe}"
                 )
+                _set_chat_status(
+                    "[color=34d399]✓ Pushed to GitHub CI! Compiling Windows .EXE (~2m) & Android .APK (~10m)...[/color]"
+                )
             else:
                 msg = (
                     f"[color=fbbf24]Pushed: {len(pushed_ok)} | Issues: {len(errors)}[/color]\n"
                     + escape_markup("\n".join(errors))
                 )
+                _set_chat_status(f"[color=f87171]GitHub Push issue: {escape_markup('; '.join(errors) or 'check token')}[/color]")
             def _done(_dt):
                 self.gh_push_btn.disabled = False
                 if hasattr(self, "gh_exe_btn"):
                     self.gh_exe_btn.disabled = False
                 self.gh_log.text = msg
             Clock.schedule_once(_done, 0)
+
+            # Live background poll for autonomous chat cards so Harish gets ready notification automatically
+            if pushed_ok and not errors and chat_status_lbl is not None:
+                announced_exe = False
+                for _poll_i in range(48):
+                    time.sleep(15)
+                    rc, rdata = self._gh_get(f"https://api.github.com/repos/{owner}/{repo}/actions/runs?per_page=2", token)
+                    ac, adata = self._gh_get(f"https://api.github.com/repos/{owner}/{repo}/actions/artifacts?per_page=6", token)
+                    arts = [a for a in (adata.get("artifacts", []) if ac == 200 and isinstance(adata, dict) else []) if not a.get("expired")]
+                    exe_ready = any("exe" in str(a.get("name", "")).lower() for a in arts)
+                    apk_ready = any("apk" in str(a.get("name", "")).lower() for a in arts)
+                    top_run = (rdata.get("workflow_runs") or [None])[0] if rc == 200 and isinstance(rdata, dict) else None
+                    r_stat = top_run.get("conclusion") or top_run.get("status") if top_run else "running"
+                    if exe_ready and not announced_exe:
+                        announced_exe = True
+                        _set_chat_status(
+                            "[color=34d399]✓ Windows .EXE compiled! Android .APK still compiling... Tap 'Open Downloads' anytime.[/color]"
+                        )
+                    if apk_ready and exe_ready:
+                        _set_chat_status(
+                            f"[b][color=34d399]✓ BOTH Android .APK & Windows .EXE Ready! Tap 'Open Downloads' -> https://github.com/{owner}/{repo}/actions[/color][/b]"
+                        )
+                        if self.audio_enabled:
+                            Clock.schedule_once(lambda _dt: self.voice_bridge.speak("Harish, aapke app ki APK aur EXE files dono ban ke ready ho gayi hain!"), 0)
+                        break
+                    if top_run and top_run.get("status") == "completed":
+                        _set_chat_status(
+                            f"[color={'34d399' if r_stat == 'success' else 'fbbf24'}]Build finished ({r_stat}). Tap 'Open Downloads' -> https://github.com/{owner}/{repo}/actions[/color]"
+                        )
+                        break
 
         threading.Thread(target=_worker, daemon=True).start()
 
